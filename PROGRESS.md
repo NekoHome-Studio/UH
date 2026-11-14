@@ -12,7 +12,7 @@
 | P0-2 | 四类插件 manifest schema | 已交付 · 待评审 | manifest.schema.json + manifest/ + P0-2 修订对照 |
 | P0-3 | REST→WS 任务流闭环（扩范围） | 已交付 · 待评审 | task-flow.md + events.md + events.schema.json + ui-state-machine.md + P0-3 修订对照 |
 | P0-4 | 沙箱分期与平台矩阵 | 已交付 · 待评审 | sandbox.md + P0-4 修订对照（SBX-07~09 新增） |
-| P0-5 | 部署暴露面与 RBAC 收紧 | 待开始 | — |
+| P0-5 | 部署暴露面与 RBAC 收紧 | 已交付 · 待评审 | deploy-hardening.md + P0-5 修订对照 |
 | P0-6 | 机器可读契约与图 | 待开始（依赖 P0-1~4；先决 A1 检索接口形态） | — |
 | M1-9 | 事件字典冻结 + 总线映射 + UI 状态机（新增） | 待开始（MS-2，Blocked by P0-3/M1-1） | — |
 
@@ -46,5 +46,10 @@
 - 新发现：SBX-06 属安装期（M2-1），M3-7 误引 → 新增 SBX-07~09；M2-2(#23)/M3-7(#34) 验收已同步
 - 决议 S1~S7；修订对照 R1~R6；状态 needs-review（内核负责人）
 
+### 2026-11-14 · P0-5 部署暴露面与 RBAC 收紧
+- 交付 deploy-hardening.md：Compose 仅 8080 对外（能力模块 expose、redis/chroma 移除宿主端口）+ uh-scaler 最小 RBAC（deployments/scale 子资源、resourceNames 锁定、禁止清单、审计命令）+ NetworkPolicy 默认拒绝与放行矩阵
+- 决议 E1~E6；§9.2/§9.3 追加条款文本就绪；M3-1(#28)/M3-2(#29) 任务已引用契约
+- 状态 needs-review；部署实跑验证属 M3-1/M3-2
+
 ## 下一步
-P0-5 部署暴露面与 RBAC 收紧：读 v3 §7.3.1 / §7.4.1 / §9.2 / §9.3，Compose 能力模块改 expose、K8s 扩缩容最小 RBAC + NetworkPolicy 默认拒绝。
+P0-6 机器可读契约与图（依赖 P0-1~4 评审冻结）：OpenAPI 3.1（§6.3 全端点）+ AsyncAPI 2.6（§6.4 事件）+ manifest schema 引用 + 4 张 Mermaid 图；先决 A1 检索接口形态。
