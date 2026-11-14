@@ -54,7 +54,7 @@
 ### 2026-11-14 · P0-6 机器可读契约与图（MS-0 收官 6/6）
 - 交付 openapi.yaml（3.1，16 路径 19 操作）+ asyncapi.yaml（2.6，24 消息，与 events.schema.json 同源生成）+ diagrams.md（4 图）+ CI 工作流 + 可复用校验脚本
 - 校验全绿：swagger-cli valid；@asyncapi/cli 官方 CLI exit 0 + parser 3.6.6 零错误；ajv 契约脚本全过；端点覆盖 19/19
-- A1 不影响用户 API（search 经 messages），仍待 M1-1 裁决；Mermaid GitHub 渲染待推送后复核
+- A1 不影响用户 API（search 经 messages），仍待 M1-1 裁决；Mermaid GitHub 渲染 4/4 浏览器实测通过（iframe 沙箱渲染）
 - MS-0 六个 P0 全部交付，进入同批评审冻结阶段
 
 ## 下一步
