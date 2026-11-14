@@ -1,0 +1,1130 @@
+asyncapi: 2.6.0
+info:
+  title: UH! WebSocket 事件流
+  version: 0.1.0
+  description: P0-6 机器可读契约。事实源：events.md（18 事件字典）/ task-flow.md（连接/鉴权/回放/关闭码）。载荷 schema 与 events.schema.json 同源生成。
+servers:
+  production:
+    url: wss://{host}/api/v1/stream
+    protocol: wss
+    variables:
+      host:
+        default: localhost:8080
+    description: >-
+      query: task_id 必填；after_event_id 重连游标（last_event_id 兼容别名）；token 鉴权或首条 op:auth。关闭码 4401/4403/4404/4408/1000 见
+      task-flow.md §2
+channels:
+  /api/v1/stream:
+    subscribe:
+      operationId: onServerFrame
+      summary: 服务端 → 客户端：18 事件 + 控制帧（pong/error/replay_unavailable）
+      message:
+        oneOf:
+          - name: task.created
+            title: 事件 task.created
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.created
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_created'
+          - name: task.finished
+            title: 事件 task.finished
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.finished
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_finished'
+          - name: task.failed
+            title: 事件 task.failed
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.failed
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_failed'
+          - name: task.cancelled
+            title: 事件 task.cancelled
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.cancelled
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_cancelled'
+          - name: task.resumed
+            title: 事件 task.resumed
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.resumed
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_resumed'
+          - name: step.started
+            title: 事件 step.started
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: step.started
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_step_started'
+          - name: step.finished
+            title: 事件 step.finished
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: step.finished
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_step_finished'
+          - name: step.failed
+            title: 事件 step.failed
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: step.failed
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_step_failed'
+          - name: delta
+            title: 事件 delta
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: delta
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_delta'
+          - name: tool.call
+            title: 事件 tool.call
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: tool.call
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_tool_call'
+          - name: tool.result
+            title: 事件 tool.result
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: tool.result
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_tool_result'
+          - name: task.confirmation_required
+            title: 事件 task.confirmation_required
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.confirmation_required
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_confirmation_required'
+          - name: task.confirmation_resolved
+            title: 事件 task.confirmation_resolved
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.confirmation_resolved
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_confirmation_resolved'
+          - name: task.yielded
+            title: 事件 task.yielded
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.yielded
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_yielded'
+          - name: task.degraded
+            title: 事件 task.degraded
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: task.degraded
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_task_degraded'
+          - name: safety.check_started
+            title: 事件 safety.check_started
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: safety.check_started
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_safety_check_started'
+          - name: safety.check_finished
+            title: 事件 safety.check_finished
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: safety.check_finished
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_safety_check_finished'
+          - name: safety.denied
+            title: 事件 safety.denied
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - event_id
+                - event
+                - version
+                - task_id
+                - trace_id
+                - ts
+                - payload
+              properties:
+                event_id:
+                  type: integer
+                  minimum: 1
+                event:
+                  const: safety.denied
+                version:
+                  const: 1
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                trace_id:
+                  type: string
+                  pattern: ^uh_trc_[A-Za-z0-9]+$
+                span_id:
+                  type: string
+                ts:
+                  type: string
+                  pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+                payload:
+                  $ref: '#/components/schemas/p_safety_denied'
+          - name: pong
+            title: 控制帧 pong
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - op
+                - ts
+              properties:
+                op:
+                  const: pong
+                ts:
+                  type: integer
+          - name: error
+            title: 控制帧 error
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - op
+                - error
+              properties:
+                op:
+                  const: error
+                error:
+                  $ref: '#/components/schemas/error'
+          - name: replay_unavailable
+            title: 控制帧 replay_unavailable
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - op
+                - reason
+              properties:
+                op:
+                  const: replay_unavailable
+                reason:
+                  const: window_expired
+    publish:
+      operationId: onClientOp
+      summary: 客户端 → 服务端：subscribe / auth / ping
+      message:
+        oneOf:
+          - name: subscribe
+            title: 控制帧 subscribe
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - op
+                - task_id
+              properties:
+                op:
+                  const: subscribe
+                task_id:
+                  type: string
+                  pattern: ^uh_task_[A-Za-z0-9]+$
+                after_event_id:
+                  type: integer
+                  minimum: 0
+                  default: 0
+          - name: auth
+            title: 控制帧 auth
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - op
+                - token
+              properties:
+                op:
+                  const: auth
+                token:
+                  type: string
+          - name: ping
+            title: 控制帧 ping
+            payload:
+              type: object
+              additionalProperties: false
+              required:
+                - op
+                - ts
+              properties:
+                op:
+                  const: ping
+                ts:
+                  type: integer
+components:
+  schemas:
+    error:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+        - retryable
+      properties:
+        code:
+          type: string
+          pattern: ^UH-[A-Z]+-[0-9]{4}$
+        message:
+          type: string
+        retryable:
+          type: boolean
+        retry_after_ms:
+          type: integer
+          minimum: 0
+        detail:
+          type: object
+    p_task_created:
+      type: object
+      additionalProperties: false
+      required:
+        - session_id
+        - mode
+      properties:
+        session_id:
+          type: string
+          pattern: ^uh_ses_[A-Za-z0-9]+$
+        mode:
+          enum:
+            - chat
+            - search
+            - workflow
+            - collaborate
+            - tool
+        title:
+          type: string
+    p_task_finished:
+      type: object
+      additionalProperties: false
+      required:
+        - final_result
+        - duration_ms
+      properties:
+        final_result:
+          type: object
+          additionalProperties: false
+          required:
+            - content
+          properties:
+            content:
+              type: string
+            citations:
+              type: array
+              items:
+                type: object
+            usage:
+              type: object
+              additionalProperties: false
+              required: []
+              properties:
+                prompt_tokens:
+                  type: integer
+                  minimum: 0
+                completion_tokens:
+                  type: integer
+                  minimum: 0
+        duration_ms:
+          type: integer
+          minimum: 0
+    p_task_failed:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/error'
+        duration_ms:
+          type: integer
+          minimum: 0
+    p_task_cancelled:
+      type: object
+      additionalProperties: false
+      required:
+        - reason
+      properties:
+        reason:
+          enum:
+            - user_request
+            - confirmation_rejected
+            - timeout
+            - system
+        error:
+          $ref: '#/components/schemas/error'
+        completed_steps:
+          type: integer
+          minimum: 0
+    p_task_resumed:
+      type: object
+      additionalProperties: false
+      required:
+        - checkpoint_id
+        - skipped_steps
+      properties:
+        checkpoint_id:
+          type: string
+        skipped_steps:
+          type: integer
+          minimum: 0
+        resumed_from_event_id:
+          type: integer
+          minimum: 1
+    p_step_started:
+      type: object
+      additionalProperties: false
+      required:
+        - step_id
+        - module
+        - name
+      properties:
+        step_id:
+          type: string
+        module:
+          enum:
+            - router
+            - llama_index
+            - langgraph
+            - crewai
+            - mcp_tool
+            - memory
+            - llm
+            - safety
+        name:
+          type: string
+        index:
+          type: integer
+          minimum: 0
+    p_step_finished:
+      type: object
+      additionalProperties: false
+      required:
+        - step_id
+        - module
+        - status
+        - duration_ms
+      properties:
+        step_id:
+          type: string
+        module:
+          enum:
+            - router
+            - llama_index
+            - langgraph
+            - crewai
+            - mcp_tool
+            - memory
+            - llm
+            - safety
+        status:
+          enum:
+            - done
+            - skipped
+        duration_ms:
+          type: integer
+          minimum: 0
+    p_step_failed:
+      type: object
+      additionalProperties: false
+      required:
+        - step_id
+        - module
+        - error
+      properties:
+        step_id:
+          type: string
+        module:
+          enum:
+            - router
+            - llama_index
+            - langgraph
+            - crewai
+            - mcp_tool
+            - memory
+            - llm
+            - safety
+        error:
+          $ref: '#/components/schemas/error'
+    p_delta:
+      type: object
+      additionalProperties: false
+      required:
+        - text
+        - index
+      properties:
+        text:
+          type: string
+        index:
+          type: integer
+          minimum: 0
+    p_tool_call:
+      type: object
+      additionalProperties: false
+      required:
+        - call_id
+        - tool_name
+        - args_summary
+        - risk_level
+        - requires_confirmation
+      properties:
+        call_id:
+          type: string
+        tool_name:
+          type: string
+        args_summary:
+          type: string
+        risk_level:
+          enum:
+            - read-only
+            - write-scoped
+            - write-host
+            - irreversible
+        requires_confirmation:
+          type: boolean
+    p_tool_result:
+      type: object
+      additionalProperties: false
+      required:
+        - call_id
+        - tool_name
+        - status
+        - truncated
+        - duration_ms
+      properties:
+        call_id:
+          type: string
+        tool_name:
+          type: string
+        status:
+          enum:
+            - ok
+            - error
+            - denied
+            - timeout
+        truncated:
+          type: boolean
+        content_preview:
+          type: string
+          maxLength: 2048
+        duration_ms:
+          type: integer
+          minimum: 0
+    p_task_confirmation_required:
+      type: object
+      additionalProperties: false
+      required:
+        - call_id
+        - tool_name
+        - risk_level
+        - summary
+        - confirmation_token
+        - expires_at
+      properties:
+        call_id:
+          type: string
+        tool_name:
+          type: string
+        risk_level:
+          enum:
+            - read-only
+            - write-scoped
+            - write-host
+            - irreversible
+        summary:
+          type: string
+        confirmation_token:
+          type: string
+          minLength: 1
+        expires_at:
+          type: string
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$
+    p_task_confirmation_resolved:
+      type: object
+      additionalProperties: false
+      required:
+        - call_id
+        - decision
+        - resolved_by
+      properties:
+        call_id:
+          type: string
+        decision:
+          enum:
+            - approved
+            - rejected
+        resolved_by:
+          enum:
+            - user
+            - timeout
+            - system
+    p_task_yielded:
+      type: object
+      additionalProperties: false
+      required:
+        - reason
+      properties:
+        reason:
+          enum:
+            - user_input_preempt
+        hint:
+          type: string
+    p_task_degraded:
+      type: object
+      additionalProperties: false
+      required:
+        - reason_code
+        - module
+        - description
+      properties:
+        reason_code:
+          type: string
+          pattern: ^UH-[A-Z]+-[0-9]{4}$
+        module:
+          enum:
+            - router
+            - llama_index
+            - langgraph
+            - crewai
+            - mcp_tool
+            - memory
+            - llm
+            - safety
+        description:
+          type: string
+    p_safety_check_started:
+      type: object
+      additionalProperties: false
+      required:
+        - check_id
+        - check_type
+        - target
+      properties:
+        check_id:
+          type: string
+        check_type:
+          enum:
+            - injection
+            - tool_risk
+            - output_filter
+        target:
+          enum:
+            - retrieval_content
+            - tool_args
+            - model_output
+            - memory_content
+    p_safety_check_finished:
+      type: object
+      additionalProperties: false
+      required:
+        - check_id
+        - check_type
+        - result
+        - duration_ms
+      properties:
+        check_id:
+          type: string
+        check_type:
+          enum:
+            - injection
+            - tool_risk
+            - output_filter
+        result:
+          enum:
+            - pass
+            - block
+        duration_ms:
+          type: integer
+          minimum: 0
+    p_safety_denied:
+      type: object
+      additionalProperties: false
+      required:
+        - check_id
+        - check_type
+        - reason
+        - action_taken
+      properties:
+        check_id:
+          type: string
+        check_type:
+          enum:
+            - injection
+            - tool_risk
+            - output_filter
+        reason:
+          type: string
+        action_taken:
+          enum:
+            - exclude_content
+            - block_tool
+            - fail_task
+        related_error_code:
+          type: string
+          pattern: ^UH-[A-Z]+-[0-9]{4}$

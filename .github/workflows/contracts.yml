@@ -1,0 +1,24 @@
+name: contracts
+on:
+  push:
+    paths: ["docs/contracts/**", "scripts/validate-contracts.mjs", ".github/workflows/contracts.yml"]
+  pull_request:
+    paths: ["docs/contracts/**", "scripts/validate-contracts.mjs", ".github/workflows/contracts.yml"]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install ajv
+        run: npm install ajv@8
+      - name: JSON Schema 契约校验（manifest + events，正例/负例）
+        run: node scripts/validate-contracts.mjs
+      - name: OpenAPI 3.1 校验
+        run: npx --yes @apidevtools/swagger-cli validate docs/contracts/openapi.yaml
+      - name: AsyncAPI 2.6 校验
+        run: npx --yes @asyncapi/cli validate docs/contracts/asyncapi.yaml
+        env:
+          CI: "true"

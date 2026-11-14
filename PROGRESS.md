@@ -13,7 +13,7 @@
 | P0-3 | REST→WS 任务流闭环（扩范围） | 已交付 · 待评审 | task-flow.md + events.md + events.schema.json + ui-state-machine.md + P0-3 修订对照 |
 | P0-4 | 沙箱分期与平台矩阵 | 已交付 · 待评审 | sandbox.md + P0-4 修订对照（SBX-07~09 新增） |
 | P0-5 | 部署暴露面与 RBAC 收紧 | 已交付 · 待评审 | deploy-hardening.md + P0-5 修订对照 |
-| P0-6 | 机器可读契约与图 | 待开始（依赖 P0-1~4；先决 A1 检索接口形态） | — |
+| P0-6 | 机器可读契约与图 | 已交付 · 待评审 | openapi.yaml + asyncapi.yaml + diagrams.md + CI 工作流 + 校验脚本 |
 | M1-9 | 事件字典冻结 + 总线映射 + UI 状态机（新增） | 待开始（MS-2，Blocked by P0-3/M1-1） | — |
 
 ## 执行日志
@@ -51,5 +51,11 @@
 - 决议 E1~E6；§9.2/§9.3 追加条款文本就绪；M3-1(#28)/M3-2(#29) 任务已引用契约
 - 状态 needs-review；部署实跑验证属 M3-1/M3-2
 
+### 2026-11-14 · P0-6 机器可读契约与图（MS-0 收官 6/6）
+- 交付 openapi.yaml（3.1，16 路径 19 操作）+ asyncapi.yaml（2.6，24 消息，与 events.schema.json 同源生成）+ diagrams.md（4 图）+ CI 工作流 + 可复用校验脚本
+- 校验全绿：swagger-cli valid；@asyncapi/cli 官方 CLI exit 0 + parser 3.6.6 零错误；ajv 契约脚本全过；端点覆盖 19/19
+- A1 不影响用户 API（search 经 messages），仍待 M1-1 裁决；Mermaid GitHub 渲染待推送后复核
+- MS-0 六个 P0 全部交付，进入同批评审冻结阶段
+
 ## 下一步
-P0-6 机器可读契约与图（依赖 P0-1~4 评审冻结）：OpenAPI 3.1（§6.3 全端点）+ AsyncAPI 2.6（§6.4 事件）+ manifest schema 引用 + 4 张 Mermaid 图；先决 A1 检索接口形态。
+MS-0 评审冻结：P0-1~6 同批评审 → 按修订对照应用两份 docx → 关闭 #1~#6 → 启动 M0-1 内核骨架（#7）。A1 检索接口形态与事件命名 2/3 段在 M1-1 冻结前裁决。

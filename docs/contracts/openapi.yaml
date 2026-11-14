@@ -1,0 +1,1167 @@
+openapi: 3.1.0
+info:
+  title: UH! User API
+  version: 0.1.0
+  description: >-
+    UH! 用户 API 机器可读契约（P0-6）。事实源：docs/contracts/（errors.md / task-flow.md / events.md）。WS 事件流见 asyncapi.yaml；错误码语义见
+    errors.md；本地模式可关闭认证（§6.2）。
+servers:
+  - url: http://localhost:8080/api/v1
+    description: 本地 / Compose（唯一对外端口 8080）
+security:
+  - bearerAuth: []
+tags:
+  - name: sessions
+  - name: tasks
+  - name: plugins
+  - name: memory
+  - name: ops
+paths:
+  /sessions:
+    post:
+      tags:
+        - sessions
+      operationId: createSession
+      summary: 创建会话
+      responses:
+        '201':
+          description: 会话已创建
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+  /sessions/{id}:
+    get:
+      tags:
+        - sessions
+      operationId: getSession
+      summary: 获取会话
+      responses:
+        '200':
+          description: 会话详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: uh_ses_ 前缀
+    delete:
+      tags:
+        - sessions
+      operationId: closeSession
+      summary: 关闭会话（清理 L0 短期记忆）
+      responses:
+        '200':
+          description: 会话已关闭
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: uh_ses_ 前缀
+  /sessions/{id}/messages:
+    get:
+      tags:
+        - sessions
+      operationId: listMessages
+      summary: 获取消息列表
+      responses:
+        '200':
+          description: 消息分页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/MessagePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 会话 ID
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+    post:
+      tags:
+        - sessions
+      operationId: sendMessage
+      summary: 发送消息 → 202 任务句柄（task_id + stream_url + trace_id，task-flow.md §1）
+      responses:
+        '202':
+          description: 任务已受理，经 stream_url 订阅事件流
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/TaskHandle'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 会话 ID
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+  /tasks/{id}:
+    get:
+      tags:
+        - tasks
+      operationId: getTask
+      summary: 任务状态
+      responses:
+        '200':
+          description: 任务状态（含终态）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/TaskStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: uh_task_ 前缀
+  /tasks/{id}/steps:
+    get:
+      tags:
+        - tasks
+      operationId: getTaskSteps
+      summary: 执行步骤（seq 与 step.started 的 event_id 对齐；超窗回放回退数据源）
+      responses:
+        '200':
+          description: 步骤列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/StepsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 任务 ID
+  /tasks/{id}/cancel:
+    post:
+      tags:
+        - tasks
+      operationId: cancelTask
+      summary: 取消任务 → task.cancelled(reason=user_request)
+      responses:
+        '200':
+          description: 取消中
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/CancelResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 任务 ID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+  /tasks/{id}/resume:
+    post:
+      tags:
+        - tasks
+      operationId: resumeTask
+      summary: 从 Checkpoint 恢复 → task.resumed，不重复执行已完成节点
+      responses:
+        '200':
+          description: 已恢复
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/ResumeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 任务 ID
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                checkpoint_id:
+                  type: string
+  /tasks/{id}/confirm:
+    post:
+      tags:
+        - tasks
+      operationId: confirmTool
+      summary: 高危工具确认（P0-3 新增；token 一次性防重放；拒绝 → task.cancelled + UH-USR-1002）
+      responses:
+        '200':
+          description: 裁决已记录
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/ConfirmResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 任务 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmRequest'
+  /plugins:
+    get:
+      tags:
+        - plugins
+      operationId: listPlugins
+      summary: 列出已安装插件
+      responses:
+        '200':
+          description: 插件列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/PluginList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+    post:
+      tags:
+        - plugins
+      operationId: installPlugin
+      summary: 安装插件（local / market:// / git+https；签名校验见 P0-2 策略）
+      responses:
+        '201':
+          description: 安装成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/PluginInfo'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InstallRequest'
+  /plugins/{name}:
+    delete:
+      tags:
+        - plugins
+      operationId: uninstallPlugin
+      summary: 卸载插件（无残留，E2E-05）
+      responses:
+        '200':
+          description: 已卸载
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/PluginInfo'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 插件 name
+  /plugins/{name}/config:
+    patch:
+      tags:
+        - plugins
+      operationId: updatePluginConfig
+      summary: 更新插件配置
+      responses:
+        '200':
+          description: 配置已更新
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/PluginInfo'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 插件 name
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                config:
+                  type: object
+  /memory/short-term:
+    get:
+      tags:
+        - memory
+      operationId: getShortTermMemory
+      summary: 查询短期记忆
+      responses:
+        '200':
+          description: 短期记忆条目
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/MemoryResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+  /memory/long-term:
+    delete:
+      tags:
+        - memory
+      operationId: purgeLongTermMemory
+      summary: 清理长期记忆（uh memory purge 的 REST 形态）
+      responses:
+        '200':
+          description: 清理结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/PurgeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      parameters:
+        - name: before
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: 清理此日期之前的长期记忆
+  /health:
+    get:
+      tags:
+        - ops
+      operationId: health
+      summary: 健康检查
+      responses:
+        '200':
+          description: 存活
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/Health'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      servers:
+        - url: http://localhost:8080
+      security: []
+  /ready:
+    get:
+      tags:
+        - ops
+      operationId: ready
+      summary: 就绪检查
+      responses:
+        '200':
+          description: 就绪
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/Health'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      servers:
+        - url: http://localhost:8080
+      security: []
+  /metrics:
+    get:
+      tags:
+        - ops
+      operationId: metrics
+      summary: Prometheus 指标（§7.5.1）
+      responses:
+        '200':
+          description: 指标文本
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Unexpected'
+      servers:
+        - url: http://localhost:8080
+      security: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Authorization: Bearer <token>；本地模式可关闭'
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+      description: 幂等键，重试相同 Key 返回首次结果（§6.2）
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    BadRequest:
+      description: 400 参数/ID 校验失败（UH-USR-1003）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: 401 未认证（UH-USR-1001）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: 403 权限不足（UH-USR-1002）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: 404 资源不存在（UH-USR-1003）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RateLimited:
+      description: 429 限流（UH-USR-1004），带 Retry-After 头
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unexpected:
+      description: 未预期错误（UH-KRN-5001 等），error.code 见 errors.md
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    Meta:
+      type: object
+      required:
+        - trace_id
+      properties:
+        trace_id:
+          type: string
+        degraded:
+          type: boolean
+          description: 降级标记（CAP-3001 等）
+    Error:
+      type: object
+      required:
+        - code
+        - message
+        - retryable
+      properties:
+        code:
+          type: string
+          pattern: ^UH-[A-Z]+-[0-9]{4}$
+        message:
+          type: string
+        retryable:
+          type: boolean
+        retry_after_ms:
+          type: integer
+          minimum: 0
+        detail:
+          type: object
+    Envelope:
+      type: object
+      required:
+        - data
+        - meta
+        - error
+      properties:
+        data: {}
+        meta:
+          $ref: '#/components/schemas/Meta'
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/Error'
+            - type: 'null'
+    ErrorEnvelope:
+      type: object
+      required:
+        - data
+        - meta
+        - error
+      properties:
+        data:
+          type: 'null'
+        meta:
+          $ref: '#/components/schemas/Meta'
+        error:
+          $ref: '#/components/schemas/Error'
+    Session:
+      type: object
+      required:
+        - session_id
+        - status
+        - created_at
+      properties:
+        session_id:
+          type: string
+        status:
+          enum:
+            - active
+            - closed
+        title:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    Message:
+      type: object
+      required:
+        - message_id
+        - role
+        - content
+        - created_at
+      properties:
+        message_id:
+          type: string
+        role:
+          enum:
+            - user
+            - assistant
+            - system
+        content:
+          type: string
+        task_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    MessagePage:
+      type: object
+      required:
+        - messages
+        - total
+        - has_more
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        total:
+          type: integer
+        has_more:
+          type: boolean
+    SendMessageRequest:
+      type: object
+      required:
+        - content
+      properties:
+        content:
+          type: string
+        mode:
+          enum:
+            - auto
+            - chat
+            - search
+            - workflow
+            - collaborate
+            - tool
+          default: auto
+        attachments:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              name:
+                type: string
+              url:
+                type: string
+        context:
+          type: object
+          properties:
+            memory_recall:
+              type: boolean
+              default: true
+            top_k:
+              type: integer
+              default: 5
+    TaskHandle:
+      type: object
+      required:
+        - task_id
+        - stream_url
+        - trace_id
+      properties:
+        task_id:
+          type: string
+        stream_url:
+          type: string
+          description: wss://...（M1+）或 https SSE（M0 过渡），按 scheme 区分
+        trace_id:
+          type: string
+    TaskStatus:
+      type: object
+      required:
+        - task_id
+        - status
+        - mode
+      properties:
+        task_id:
+          type: string
+        status:
+          enum:
+            - pending
+            - running
+            - pending_confirmation
+            - finished
+            - failed
+            - cancelled
+        mode:
+          enum:
+            - chat
+            - search
+            - workflow
+            - collaborate
+            - tool
+        created_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        error:
+          $ref: '#/components/schemas/Error'
+    Step:
+      type: object
+      required:
+        - seq
+        - module
+        - status
+      properties:
+        seq:
+          type: integer
+          description: '= 该步骤 step.started 的 event_id'
+        module:
+          enum:
+            - router
+            - llama_index
+            - langgraph
+            - crewai
+            - mcp_tool
+            - memory
+            - llm
+            - safety
+        name:
+          type: string
+        status:
+          enum:
+            - pending
+            - running
+            - done
+            - failed
+            - skipped
+        finished_event_id:
+          type: integer
+        duration_ms:
+          type: integer
+    StepsResponse:
+      type: object
+      required:
+        - task_id
+        - steps
+      properties:
+        task_id:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/Step'
+    CancelResult:
+      type: object
+      required:
+        - task_id
+        - status
+      properties:
+        task_id:
+          type: string
+        status:
+          const: cancelling
+    ResumeResult:
+      type: object
+      required:
+        - task_id
+        - resumed_from_event_id
+      properties:
+        task_id:
+          type: string
+        resumed_from_event_id:
+          type: integer
+        checkpoint_id:
+          type: string
+    ConfirmRequest:
+      type: object
+      required:
+        - confirmation_token
+        - decision
+      properties:
+        confirmation_token:
+          type: string
+        decision:
+          enum:
+            - approved
+            - rejected
+    ConfirmResult:
+      type: object
+      required:
+        - call_id
+        - decision
+      properties:
+        call_id:
+          type: string
+        decision:
+          enum:
+            - approved
+            - rejected
+    PluginInfo:
+      type: object
+      required:
+        - name
+        - version
+        - type
+        - status
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        type:
+          enum:
+            - tool
+            - theme
+            - capability
+            - hook
+        status:
+          enum:
+            - installed
+            - active
+            - quarantined
+        risk_level:
+          enum:
+            - read-only
+            - write-scoped
+            - write-host
+            - irreversible
+        permissions:
+          type: array
+          items:
+            type: string
+    PluginList:
+      type: object
+      required:
+        - plugins
+        - total
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: '#/components/schemas/PluginInfo'
+        total:
+          type: integer
+    InstallRequest:
+      type: object
+      required:
+        - source
+      properties:
+        source:
+          type: string
+          description: 本地路径 / market://name@ver / git+https://...
+        no_verify:
+          type: boolean
+          default: false
+          description: 跳过签名校验（显著告警，§9.3）
+    MemoryResult:
+      type: object
+      required:
+        - session_id
+        - entries
+      properties:
+        session_id:
+          type: string
+        entries:
+          type: array
+          items:
+            type: object
+    PurgeResult:
+      type: object
+      required:
+        - purged_count
+      properties:
+        purged_count:
+          type: integer
+        before:
+          type: string
+          format: date
+    Health:
+      type: object
+      required:
+        - status
+        - version
+      properties:
+        status:
+          enum:
+            - ok
+            - degraded
+        version:
+          type: string
