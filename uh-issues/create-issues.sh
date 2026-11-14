@@ -76,7 +76,7 @@ for row in "${TASKS[@]}"; do
   num="${ID2NUM[$id]}"
   content="$(cat "$body")"
   for k in "${!ID2NUM[@]}"; do
-    content="${content//\{\{$k\}\}/#${ID2NUM[$k]}}"
+    content="${content//\{\{$k\}\}/${ID2NUM[$k]}}"
   done
   printf '%s\n' "$content" > /tmp/uh-issue-body.md
   gh issue edit "$num" --repo "$REPO" --body-file /tmp/uh-issue-body.md >/dev/null
