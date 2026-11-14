@@ -1,0 +1,14 @@
+{
+  "event_id": 15,
+  "event": "task.degraded",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "trace_id": "uh_trc_9c8d",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "reason_code": "UH-CAP-3001",
+    "module": "llama_index",
+    "description": "检索无结果，使用模型知识回答"
+  }
+}

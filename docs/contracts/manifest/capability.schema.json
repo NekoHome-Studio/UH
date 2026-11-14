@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "capability.schema.json",
+  "title": "UH! 能力插件 manifest（内部 RPC，§5.4③）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "version",
+    "type",
+    "description",
+    "author",
+    "license",
+    "permissions",
+    "entry",
+    "config"
+  ],
+  "properties": {
+    "name": {
+      "$ref": "common.schema.json#/$defs/name"
+    },
+    "version": {
+      "$ref": "common.schema.json#/$defs/semver"
+    },
+    "description": {
+      "$ref": "common.schema.json#/$defs/description"
+    },
+    "author": {
+      "$ref": "common.schema.json#/$defs/author"
+    },
+    "license": {
+      "$ref": "common.schema.json#/$defs/license"
+    },
+    "permissions": {
+      "$ref": "common.schema.json#/$defs/permissions"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/dependency"
+      }
+    },
+    "network": {
+      "$ref": "common.schema.json#/$defs/network"
+    },
+    "type": {
+      "const": "capability"
+    },
+    "entry": {
+      "$ref": "common.schema.json#/$defs/entry"
+    },
+    "config": {
+      "$ref": "common.schema.json#/$defs/configBase"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "permissions": {
+            "contains": {
+              "const": "network.outbound"
+            }
+          }
+        },
+        "required": [
+          "permissions"
+        ]
+      },
+      "then": {
+        "required": [
+          "network"
+        ]
+      }
+    }
+  ]
+}

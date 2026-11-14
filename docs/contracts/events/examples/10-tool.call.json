@@ -1,0 +1,16 @@
+{
+  "event_id": 10,
+  "event": "tool.call",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "trace_id": "uh_trc_9c8d",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "call_id": "call_1",
+    "tool_name": "web_search",
+    "args_summary": "query=MCP spec",
+    "risk_level": "read-only",
+    "requires_confirmation": false
+  }
+}

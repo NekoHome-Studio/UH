@@ -1,0 +1,24 @@
+{
+  "event_id": 8,
+  "event": "step.failed",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "trace_id": "uh_trc_9c8d",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "step_id": "st_3",
+    "module": "mcp_tool",
+    "error": {
+      "code": "UH-CAP-5021",
+      "message": "工具调用超时 (5000ms)",
+      "retryable": true,
+      "retry_after_ms": 2000,
+      "detail": {
+        "module": "tool",
+        "tool_name": "web_search",
+        "timeout_ms": 5000
+      }
+    }
+  }
+}

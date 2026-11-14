@@ -1,0 +1,21 @@
+{
+  "name": "dark",
+  "version": "1.0.0",
+  "type": "theme",
+  "description": "暗色主题",
+  "author": "uh-official",
+  "license": "MIT",
+  "permissions": [],
+  "config": {
+    "css_variables": {
+      "--uh-bg-primary": "#0f172a",
+      "--uh-fg-primary": "#e2e8f0",
+      "--uh-accent": "#60a5fa",
+      "--uh-radius": "12px"
+    },
+    "font_stack": [
+      "Inter",
+      "HarmonyOS Sans SC"
+    ]
+  }
+}

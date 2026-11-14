@@ -1,0 +1,17 @@
+{
+  "event_id": 3,
+  "event": "task.failed",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "trace_id": "uh_trc_9c8d",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "error": {
+      "code": "UH-KRN-5001",
+      "message": "内核内部错误",
+      "retryable": false
+    },
+    "duration_ms": 1500
+  }
+}

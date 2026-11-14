@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "manifest.schema.json",
+  "title": "UH! 插件 manifest 入口（按 type 判别，P0-2）",
+  "description": "四类插件统一入口；type 与加载器必须一致（§5.2）。签名策略：默认全签，theme 可经 uh-security.yaml plugin.signature_exceptions 配置豁免",
+  "oneOf": [
+    {
+      "$ref": "tool.schema.json"
+    },
+    {
+      "$ref": "theme.schema.json"
+    },
+    {
+      "$ref": "capability.schema.json"
+    },
+    {
+      "$ref": "hook.schema.json"
+    }
+  ]
+}

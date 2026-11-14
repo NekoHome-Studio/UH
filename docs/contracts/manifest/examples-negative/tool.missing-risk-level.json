@@ -1,0 +1,24 @@
+{
+  "name": "web-search",
+  "version": "1.0.0",
+  "type": "tool",
+  "entry": "main.py",
+  "description": "调用外部搜索引擎获取网页摘要",
+  "author": "uh-official",
+  "license": "MIT",
+  "permissions": [
+    "network.outbound",
+    "fs.sandbox.read"
+  ],
+  "network": {
+    "allow_hosts": [
+      "api.bing.com",
+      "www.google.com"
+    ]
+  },
+  "config": {
+    "timeout_ms": 5000,
+    "rate_limit": 10,
+    "memory_limit_mb": 256
+  }
+}

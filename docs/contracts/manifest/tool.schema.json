@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "tool.schema.json",
+  "title": "UH! 工具插件 manifest（MCP，§5.4①）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "version",
+    "type",
+    "description",
+    "author",
+    "license",
+    "permissions",
+    "entry",
+    "config",
+    "risk_level"
+  ],
+  "properties": {
+    "name": {
+      "$ref": "common.schema.json#/$defs/name"
+    },
+    "version": {
+      "$ref": "common.schema.json#/$defs/semver"
+    },
+    "description": {
+      "$ref": "common.schema.json#/$defs/description"
+    },
+    "author": {
+      "$ref": "common.schema.json#/$defs/author"
+    },
+    "license": {
+      "$ref": "common.schema.json#/$defs/license"
+    },
+    "permissions": {
+      "$ref": "common.schema.json#/$defs/permissions"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/dependency"
+      }
+    },
+    "network": {
+      "$ref": "common.schema.json#/$defs/network"
+    },
+    "type": {
+      "const": "tool"
+    },
+    "entry": {
+      "$ref": "common.schema.json#/$defs/entry"
+    },
+    "risk_level": {
+      "enum": [
+        "read-only",
+        "write-scoped",
+        "write-host",
+        "irreversible"
+      ],
+      "description": "工具风险分级，必填；缺失拒绝加载（§9.6，P0-2 新增）。确认策略由 §9.10 confirm_levels 决定"
+    },
+    "config": {
+      "$ref": "common.schema.json#/$defs/configBase"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "permissions": {
+            "contains": {
+              "const": "network.outbound"
+            }
+          }
+        },
+        "required": [
+          "permissions"
+        ]
+      },
+      "then": {
+        "required": [
+          "network"
+        ]
+      }
+    }
+  ]
+}

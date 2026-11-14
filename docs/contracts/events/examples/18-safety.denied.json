@@ -1,0 +1,16 @@
+{
+  "event_id": 18,
+  "event": "safety.denied",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "trace_id": "uh_trc_9c8d",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "check_id": "chk_2",
+    "check_type": "tool_risk",
+    "reason": "目标路径越界",
+    "action_taken": "block_tool",
+    "related_error_code": "UH-KRN-2010"
+  }
+}

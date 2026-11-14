@@ -1,0 +1,16 @@
+{
+  "name": "ocr",
+  "version": "0.1.0",
+  "type": "capability",
+  "entry": "main.py",
+  "description": "图片文字识别能力单元",
+  "author": "uh-official",
+  "license": "Apache-2.0",
+  "permissions": [
+    "fs.sandbox.read"
+  ],
+  "config": {
+    "timeout_ms": 15000,
+    "memory_limit_mb": 512
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "event_id": 2,
+  "event": "task.finished",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "trace_id": "uh_trc_9c8d",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "final_result": {
+      "content": "MCP 协议要点……",
+      "citations": [
+        {
+          "title": "MCP Spec",
+          "url": "https://example.com/spec"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 1200,
+        "completion_tokens": 350
+      }
+    },
+    "duration_ms": 4200
+  }
+}

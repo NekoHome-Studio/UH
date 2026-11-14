@@ -1,0 +1,17 @@
+{
+  "event_id": 12,
+  "event": "task.confirmation_required",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "trace_id": "uh_trc_9c8d",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "call_id": "call_2",
+    "tool_name": "file_delete",
+    "risk_level": "irreversible",
+    "summary": "删除沙箱目录下 3 个文件",
+    "confirmation_token": "cfm_tok_abc123",
+    "expires_at": "2026-11-14T08:35:01Z"
+  }
+}

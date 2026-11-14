@@ -1,0 +1,12 @@
+{
+  "event_id": 1,
+  "event": "task.created",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "session_id": "uh_ses_001",
+    "mode": "chat"
+  }
+}

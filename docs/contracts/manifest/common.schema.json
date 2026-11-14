@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "common.schema.json",
+  "title": "UH! manifest 公共定义（P0-2）",
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,40}$",
+      "description": "全局唯一，小写字母开头 + 小写字母/数字/连字符（§5.2 校验规则）"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "SemVer 2.0（§5.2）"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "SPDX 标识，如 MIT / Apache-2.0"
+    },
+    "entry": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)(?!/)[A-Za-z0-9_./-]+$",
+      "description": "入口文件相对路径，禁止绝对路径与 .. 穿越"
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "network.outbound",
+          "fs.sandbox.read",
+          "fs.sandbox.write",
+          "fs.host.read",
+          "memory.short_term.read"
+        ]
+      },
+      "description": "权限声明，沙箱依据；未声明的动作运行时拦截（§5.5）。fs.sandbox.write 为 P0-2 新增（支撑 §9.6 write-scoped）。枚举扩展需契约修订。"
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allow_hosts"
+      ],
+      "properties": {
+        "allow_hosts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(\\*\\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}$"
+          },
+          "description": "出站域名白名单，支持 *.example.com 通配；与全局 tool.network_allow_hosts 取交集（§9.6 / §9.10）"
+        }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "common.schema.json#/$defs/name"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SemVer 范围，如 ^1.0.0"
+        }
+      },
+      "description": "声明依赖，load 阶段检查就绪（§5.3）；P0-2 补充字段"
+    },
+    "configBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timeout_ms",
+        "memory_limit_mb"
+      ],
+      "properties": {
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000,
+          "default": 5000,
+          "description": "单次调用超时上限，内核侧计时（§5.2 / §9.3）"
+        },
+        "rate_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 60,
+          "description": "每分钟最大调用次数（§5.2）"
+        },
+        "memory_limit_mb": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 8192,
+          "default": 256,
+          "description": "进程内存上限，超限 OOM Kill（§5.5）"
+        }
+      }
+    }
+  }
+}

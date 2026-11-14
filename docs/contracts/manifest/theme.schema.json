@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "theme.schema.json",
+  "title": "UH! 主题插件 manifest（CSS 变量契约，§5.4②）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "version",
+    "type",
+    "description",
+    "author",
+    "license",
+    "permissions",
+    "config"
+  ],
+  "properties": {
+    "name": {
+      "$ref": "common.schema.json#/$defs/name"
+    },
+    "version": {
+      "$ref": "common.schema.json#/$defs/semver"
+    },
+    "description": {
+      "$ref": "common.schema.json#/$defs/description"
+    },
+    "author": {
+      "$ref": "common.schema.json#/$defs/author"
+    },
+    "license": {
+      "$ref": "common.schema.json#/$defs/license"
+    },
+    "permissions": {
+      "$ref": "common.schema.json#/$defs/permissions"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/dependency"
+      }
+    },
+    "network": {
+      "$ref": "common.schema.json#/$defs/network"
+    },
+    "type": {
+      "const": "theme"
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "css_variables"
+      ],
+      "properties": {
+        "css_variables": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^--uh-[a-z0-9]+(-[a-z0-9]+)*$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "UI 只消费变量，禁止 JS 注入（§5.4）"
+        },
+        "font_stack": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "permissions": {
+            "contains": {
+              "const": "network.outbound"
+            }
+          }
+        },
+        "required": [
+          "permissions"
+        ]
+      },
+      "then": {
+        "required": [
+          "network"
+        ]
+      }
+    }
+  ],
+  "description": "主题插件仅需 YAML/JSON，无需编码，故无 entry 字段（§5.7）；签名默认必需，可经 plugin.signature_exceptions 配置豁免（§9.10）"
+}

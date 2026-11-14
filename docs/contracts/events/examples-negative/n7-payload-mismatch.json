@@ -1,0 +1,13 @@
+{
+  "event_id": 1,
+  "event": "step.started",
+  "version": 1,
+  "task_id": "uh_task_7f3a9c",
+  "trace_id": "uh_trc_9c8d",
+  "span_id": "sp_001",
+  "ts": "2026-11-14T08:30:01Z",
+  "payload": {
+    "text": "hi",
+    "index": 0
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "audit-log",
+  "version": "1.0.0",
+  "type": "hook",
+  "entry": "main.py",
+  "description": "审计日志钩子，订阅内核关键事件",
+  "author": "uh-official",
+  "license": "MIT",
+  "permissions": [
+    "fs.sandbox.write"
+  ],
+  "config": {
+    "timeout_ms": 2000,
+    "memory_limit_mb": 128,
+    "events": [
+      "kernel.request.received",
+      "kernel.route.decided",
+      "capability.invoked",
+      "capability.failed",
+      "memory.write"
+    ]
+  }
+}
