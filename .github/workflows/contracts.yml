@@ -12,10 +12,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Install ajv
-        run: npm install ajv@8
+      - name: Install ajv + js-yaml
+        run: npm install ajv@8 js-yaml@4
       - name: JSON Schema 契约校验（manifest + events，正例/负例）
         run: node scripts/validate-contracts.mjs
+      - name: 交叉一致性预检（错误码/事件/枚举/链接/数量/信封/SBX）
+        run: node scripts/review-precheck.mjs
       - name: OpenAPI 3.1 校验
         run: npx --yes @apidevtools/swagger-cli validate docs/contracts/openapi.yaml
       - name: AsyncAPI 2.6 校验
