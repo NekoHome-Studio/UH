@@ -37,6 +37,8 @@ REPO=NekoHome-Studio/UH bash uh-issues/milestones.sh
 REPO=NekoHome-Studio/UH bash uh-issues/create-issues.sh
 ```
 
+> ⚠️ 39 个 Issue / 18 labels / 6 milestones 已于 2026-11-14 经 API 实建（编号映射见 [uh-issues/issue-map.csv](uh-issues/issue-map.csv)）。重跑 create-issues.sh 会产生重复 Issue；增量变更请直接在 GitHub 编辑或走 API。
+
 ## 下一步
 
 P0-4 沙箱分期与平台矩阵 → P0-5 部署暴露面与 RBAC → P0-6 机器可读契约与图（OpenAPI/AsyncAPI）。

@@ -28,3 +28,9 @@ M1-7 的新依赖 M1-9 在 TASKS 数组中晚于 M1-7 创建；create-issues.sh 
 
 ## 基线说明
 上游基线已切换为《Ultra-Harness技术文档_整合版_v3（润色校对）》（见 docs/contracts/revisions/基线变更-v3-差异评估.md）；本包章节引用两版一致，无需改动。
+
+## 变更 4：GitHub 实建（2026-11-14）
+- 经 REST API 创建：18 labels、6 milestones（MS-0~MS-5）、39 issues（#1~#39，按 TASKS 顺序）
+- 第二轮全量回填依赖编号（39/39），残留 {{ID}} 占位符 0
+- 编号映射持久化于 issue-map.csv；P0-1=#1、P0-3=#3、M1-9=#21、R-3=#39
+- create-issues.sh 自此仅作历史参考，重跑会产生重复 Issue

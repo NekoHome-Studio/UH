@@ -35,5 +35,10 @@
 - Issue 体系：新增 M1-9；M1-1/7/8 扩任务；M2-5/M3-6 受益；create-issues.sh + issues.csv 同步（39）；ADDENDUM.md 记录变更
 - 待办：与 P0-1/P0-2 同批评审（含时序图评审）→ 修订两份 docx → 关闭 P0-3
 
+### 2026-11-14 · GitHub Issue 体系实建
+- REST API 创建（gh 未安装，凭据取自 Windows 凭据管理器）：18 labels、6 milestones、39 issues（#1~#39，TASKS 顺序）
+- 第二轮回填 39 个正文依赖编号，残留占位符 0；M1-9=#21，M1-7=#19（Blocked by #3/#13/#18/#21）
+- 持久化 uh-issues/issue-map.csv（id→number→url 映射）；仓库 https://github.com/NekoHome-Studio/UH
+
 ## 下一步
 P0-4 沙箱分期与平台矩阵：读 v3 §5.5 / §9.3，输出 M2 最小版 / M3 加固版分期表 + Linux/macOS/Windows 平台矩阵，标注目标态与本期交付态。
