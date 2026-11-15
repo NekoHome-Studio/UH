@@ -8,12 +8,21 @@ import logging
 import time
 
 from fastapi import FastAPI, Request, Response
+from pydantic import BaseModel
 
 from . import __version__, tracing
 from .logging import get_logger, log_event, setup_logging
+from .router import classify
 
 setup_logging()
 log = get_logger("kernel.http")
+
+
+class RouteRequest(BaseModel):
+    """Request body for the development-only routing endpoint."""
+
+    content: str
+    mode: str = "auto"
 
 
 def create_app() -> FastAPI:
@@ -39,6 +48,20 @@ def create_app() -> FastAPI:
     async def ready():
         # M0 无外部依赖；M0-4 起在此注册 Redis 等就绪检查
         return {"status": "ok", "version": __version__, "checks": {}}
+
+    @app.post("/api/v1/dev/route", include_in_schema=False)
+    async def dev_route(req: RouteRequest):
+        # 开发/测试端点：M0-3 messages 端点落地后移除；不在公开 OpenAPI 契约内
+        try:
+            d = classify(req.content, req.mode)
+        except ValueError:
+            return Response(
+                content='{"data":null,"meta":{},"error":{"code":"UH-USR-1003","message":"invalid mode","retryable":false}}',
+                status_code=400, media_type="application/json")
+        log_event(log, logging.INFO, "kernel.route.decided", task_type=d.task_type, mode=d.mode, rule=d.rule, confidence=d.confidence)
+        if d.fallback:
+            log_event(log, logging.WARNING, "route.fallback", reason="unrecognized", task_type="chat")
+        return {"task_type": d.task_type, "mode": d.mode, "rule": d.rule, "confidence": d.confidence, "fallback": d.fallback}
 
     return app
 

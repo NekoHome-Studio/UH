@@ -42,7 +42,7 @@ npx --yes @asyncapi/cli validate docs/contracts/asyncapi.yaml   # 官方 CLI；�
 2. **修订对照**：6 份 R 系列替换文本是否符合意图；评审通过后应用两份 docx 并执行各自的应用核对清单。
 3. **基线差异 A1~A5**：A1 检索接口形态（MCP vs 内部 RPC）、A2 无条件重试 vs 幂等约束——M1-1 冻结前裁决，不阻塞 MS-0。
 4. **Windows M2 风险披露文案**（sandbox.md §3）：确认对外表述可接受。
-5. **INFO 项 E 的 5 处标记**（UH-CAP-50210×1、UH-LLM-*×3、UH-KRN-1001×1）：是源 docx 待修订项，不是契约缺陷。
+5. **INFO 项 E 的 5 处标记**（CAP-50210 五位数×1、LLM-*×3、KRN-1001×1）：是源 docx 待修订项，不是契约缺陷。
 
 ## 5. GitHub 侧验证
 
