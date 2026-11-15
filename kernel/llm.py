@@ -157,3 +157,34 @@ class LLMClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+class MockLLMClient:
+    """开发/演示用 mock provider（无密钥时回退），接口与 LLMClient 一致。"""
+
+    def __init__(self, **kwargs: Any):
+        self.model = "mock"
+
+    @property
+    def uh_token_usage_total(self) -> dict:
+        return {}
+
+    async def stream_chat(self, messages: list[dict], **kwargs: Any) -> AsyncIterator[str]:
+        last = messages[-1]["content"] if messages else ""
+        text = "这是 UH! 内核的演示回复（mock provider，未配置真实 LLM）。收到：" + last
+        for ch in text:
+            yield ch
+            await asyncio.sleep(0.005)
+
+    async def chat(self, messages: list[dict], **kwargs: Any) -> str:
+        return "".join([c async for c in self.stream_chat(messages, **kwargs)])
+
+    async def aclose(self) -> None:
+        pass
+
+
+def create_llm_client() -> Any:
+    if os.environ.get("UH_LLM_PROVIDER") == "mock" or not os.environ.get("UH_LLM_API_KEY"):
+        log_event(log, logging.WARNING, "llm.backend", backend="mock", reason="UH_LLM_API_KEY unset (dev fallback)")
+        return MockLLMClient()
+    return LLMClient()

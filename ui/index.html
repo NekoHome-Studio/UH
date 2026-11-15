@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UH!</title>
+<style>
+  :root { --uh-bg-primary:#0f172a; --uh-fg-primary:#e2e8f0; --uh-accent:#60a5fa; --uh-radius:12px; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--uh-bg-primary); color:var(--uh-fg-primary);
+         font-family:Inter,"HarmonyOS Sans SC",system-ui,sans-serif; min-height:100vh; display:flex; flex-direction:column; }
+  header { padding:16px 24px; font-weight:600; letter-spacing:.5px; color:var(--uh-accent); }
+  #chat { flex:1; max-width:820px; width:100%; margin:0 auto; padding:8px 20px 120px; }
+  .msg { margin:14px 0; line-height:1.6; white-space:pre-wrap; }
+  .msg.user { color:#94a3b8; }
+  .msg.user::before { content:"你 › "; color:var(--uh-accent); }
+  .msg.assistant { background:#1e293b; padding:12px 16px; border-radius:var(--uh-radius); }
+  .breathing { display:inline-flex; align-items:center; gap:8px; color:#64748b; font-size:14px; margin:10px 0; }
+  .breathing .dot { width:10px; height:10px; border-radius:50%; background:var(--uh-accent); animation:breathe 1.2s ease-in-out infinite; }
+  @keyframes breathe { 0%,100%{opacity:.3; transform:scale(.8);} 50%{opacity:1; transform:scale(1.2);} }
+  .error { padding:10px 14px; border-radius:var(--uh-radius); margin:10px 0; font-size:14px; }
+  .error.USR { background:#3b2f1e; color:#fbbf24; }
+  .error.KRN { background:#3b1e1e; color:#f87171; }
+  .error.CAP { background:#1e2f3b; color:#38bdf8; }
+  .error.MEM { background:#2a1e3b; color:#c084fc; }
+  #bar { position:fixed; bottom:0; left:0; right:0; background:linear-gradient(transparent,var(--uh-bg-primary) 30%); padding:20px; }
+  #bar .inner { max-width:820px; margin:0 auto; display:flex; gap:10px; }
+  #prompt { flex:1; background:#1e293b; border:1px solid #334155; color:var(--uh-fg-primary);
+            padding:14px 16px; border-radius:var(--uh-radius); font-size:16px; outline:none; }
+  #prompt:focus { border-color:var(--uh-accent); }
+  #send { background:var(--uh-accent); color:#0f172a; border:none; padding:0 22px; border-radius:var(--uh-radius);
+          font-size:16px; font-weight:600; cursor:pointer; }
+  #send:disabled { opacity:.5; cursor:default; }
+</style>
+</head>
+<body>
+<header>UH! <span style="color:#475569;font-weight:400;font-size:13px">Ultra Harness · M0</span></header>
+<div id="chat"></div>
+<div id="bar"><div class="inner">
+  <input id="prompt" placeholder="输入消息，开始对话…" autofocus autocomplete="off">
+  <button id="send">发送</button>
+</div></div>
+<script>
+const chat = document.getElementById('chat');
+const prompt = document.getElementById('prompt');
+const send = document.getElementById('send');
+let sessionId = null, busy = false;
+
+const DOMAIN = {
+  USR: '请求/认证问题，请检查输入或重新登录',
+  KRN: '系统故障，请附 trace_id 反馈',
+  CAP: '能力层问题，可稍后重试',
+  MEM: '记忆/会话已过期，请新开会话'
+};
+function addMsg(role, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + role; d.textContent = text;
+  chat.appendChild(d); d.scrollIntoView({behavior:'smooth'}); return d;
+}
+function breathing(on) {
+  let b = document.getElementById('breath');
+  if (on && !b) { b = document.createElement('div'); b.id='breath'; b.className='breathing';
+    b.innerHTML='<span class="dot"></span>思考中…'; chat.appendChild(b); b.scrollIntoView({behavior:'smooth'}); }
+  if (!on && b) b.remove();
+}
+function showError(code, message, traceId) {
+  const domain = (code||'').split('-')[1] || 'KRN';
+  const d = document.createElement('div'); d.className='error '+domain;
+  d.textContent = '['+code+'] '+(DOMAIN[domain]||'')+' — '+(message||'')+(traceId?' (trace: '+traceId+')':'');
+  chat.appendChild(d); d.scrollIntoView({behavior:'smooth'});
+}
+async function submit() {
+  const content = prompt.value.trim();
+  if (!content || busy) return;
+  busy = true; send.disabled = true; prompt.value='';
+  addMsg('user', content);
+  try {
+    if (!sessionId) {
+      const s = await (await fetch('/api/v1/sessions', {method:'POST'})).json();
+      sessionId = s.data.session_id;
+    }
+    const resp = await (await fetch('/api/v1/sessions/'+sessionId+'/messages', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({content, mode:'auto'})
+    })).json();
+    const { task_id, stream_url, trace_id } = resp.data;
+    breathing(true);
+    const target = addMsg('assistant', '');
+    const es = new EventSource(stream_url);
+    es.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      if (ev.event === 'delta') { target.textContent += ev.payload.text; target.scrollIntoView({behavior:'smooth'}); }
+      else if (ev.event === 'task.finished') { breathing(false); es.close(); busy=false; send.disabled=false; prompt.focus(); }
+      else if (ev.event === 'task.failed') { breathing(false); target.remove(); showError(ev.payload.error.code, ev.payload.error.message, trace_id); es.close(); busy=false; send.disabled=false; }
+      else if (ev.event === 'error') { breathing(false); showError(ev.payload.error.code, ev.payload.error.message, trace_id); es.close(); busy=false; send.disabled=false; }
+    };
+    es.onerror = () => { breathing(false); es.close(); busy=false; send.disabled=false; };
+  } catch (err) {
+    breathing(false); showError('UH-KRN-5001', String(err), null); busy=false; send.disabled=false;
+  }
+}
+send.addEventListener('click', submit);
+prompt.addEventListener('keydown', e => { if (e.key==='Enter') submit(); });
+</script>
+</body>
+</html>

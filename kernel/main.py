@@ -4,16 +4,25 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import secrets
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import __version__, tracing
 from .logging import get_logger, log_event, setup_logging
 from .router import classify
 from .memory import create_short_term_memory
+from .llm import create_llm_client
+from .tasks import TaskManager
+
+_UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 
 setup_logging()
 log = get_logger("kernel.http")
@@ -26,9 +35,18 @@ class RouteRequest(BaseModel):
     mode: str = "auto"
 
 
+class MessageRequest(BaseModel):
+    """Request body for POST /sessions/{id}/messages."""
+
+    content: str
+    mode: str = "auto"
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
     app.state.memory = create_short_term_memory()
+    app.state.llm = create_llm_client()
+    app.state.tasks = TaskManager(app.state.llm, app.state.memory)
 
     @app.middleware("http")
     async def trace_middleware(request: Request, call_next):
@@ -70,6 +88,38 @@ def create_app() -> FastAPI:
         if d.fallback:
             log_event(log, logging.WARNING, "route.fallback", reason="unrecognized", task_type="chat")
         return {"task_type": d.task_type, "mode": d.mode, "rule": d.rule, "confidence": d.confidence, "fallback": d.fallback}
+
+    @app.get("/")
+    async def index():
+        return FileResponse(_UI)
+
+    @app.post("/api/v1/sessions", status_code=201)
+    async def create_session():
+        sid = "uh_ses_" + secrets.token_hex(16)
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        return {"data": {"session_id": sid, "status": "active", "created_at": now}, "meta": {"trace_id": tracing.new_trace_id()}, "error": None}
+
+    @app.post("/api/v1/sessions/{session_id}/messages", status_code=202)
+    async def send_message(session_id: str, req: MessageRequest):
+        task_id, trace_id = app.state.tasks.create(session_id, req.content, req.mode)
+        return {"data": {"task_id": task_id, "stream_url": "/api/v1/tasks/" + task_id + "/stream", "trace_id": trace_id}, "meta": {"trace_id": trace_id}, "error": None}
+
+    @app.get("/api/v1/tasks/{task_id}")
+    async def get_task(task_id: str):
+        st = app.state.tasks.status(task_id)
+        if st is None:
+            return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1003", "message": "task not found", "retryable": False}}), status_code=404, media_type="application/json")
+        return {"data": st, "meta": {}, "error": None}
+
+    @app.get("/api/v1/tasks/{task_id}/stream")
+    async def task_stream(task_id: str):
+        async def gen():
+            try:
+                async for ev in app.state.tasks.stream(task_id):
+                    yield "data: " + json.dumps(ev, ensure_ascii=False) + "\n\n"
+            except KeyError:
+                yield "data: " + json.dumps({"event": "error", "payload": {"error": {"code": "UH-USR-1003", "message": "task not found"}}}) + "\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
 
     return app
 
