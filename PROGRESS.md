@@ -1,7 +1,7 @@
 # UH! 执行进度
 
 > 任务基线：uh-issues/（39 个 Issue，含新增 M1-9）· 计划 20 周 · 本文档随执行更新
-> 当前阶段：MS-0 已冻结（2026-11-15 评审通过，tag contract-v0.1.0）→ 进入 M0 骨架期
+> 当前阶段：M0 骨架期完成（2026-11-15，#7~#12 全关闭，50/50 测试）→ 待进入 M1 能力期
 > 上游基线：docs/source/《Ultra-Harness技术文档_整合版_v3（润色校对）.docx》（2026-11-14 切换，v0.1.0 架构文档保留对照）
 
 ## 状态总览
@@ -20,6 +20,7 @@
 | M0-3 | LLM 调用封装（流式/重试/Token） | 已完成 · DSH 实现 | llm.py + 7 mock 测试，31/31 + 服务器实测 |
 | M0-4 | Redis 短期记忆（滑动窗口） | 已完成 · DSH 实现 | memory.py + 6 fakeredis 测试，37/37 + /ready 接入 |
 | M0-5 | Web UI 最小版（Prompt-bar-first+流式） | 已完成 · DSH 实现 | ui/index.html + tasks.py SSE，42/42 + 跨机实测 |
+| M0-6 | CLI uh dev up/down/logs/reset | 已完成 · DSH 实现 | cli.py + uh-dev.yaml，50/50 + 跨平台 |
 
 ## 执行日志
 
@@ -89,5 +90,19 @@
 - M0-3 由 DSH 实现：kernel/llm.py（OpenAI 兼容流式 + 指数退避 + CAP-4xxx 映射 + Token 统计），7 mock 测试，本地+服务器 31/31，部署 192.168.0.28
 - 预检白名单补内核日志事件；verify-all 全过；关闭 #9
 
+### 2026-11-15 · M0-6 CLI 完成 + M0 骨架期收官（夜间自主推进）
+- M0-6：kernel/cli.py uh dev up/down/logs/reset/watch + uh-dev.yaml，跨平台进程管理，-ui 对齐 §7.2，8 测试
+- M0 全部完成：#7~#12 关闭，本地+服务器 50/50，verify-all 全过，部署 192.168.0.28:8080
+
+## M0 验收汇总（MS-1 出口标准）
+| 标准 | 结果 |
+|---|---|
+| chat/search 流式对话 | ✅ M0-3 LLM 流式 + M0-5 SSE UI（mock 可演示，配 UH_LLM_API_KEY 接真实） |
+| trace_id 可查 | ✅ M0-1 全链路 trace_id + 日志串联 + 响应头 |
+| 路由准确率 ≥90% | ✅ M0-2 100/100 |
+| 20 轮不丢上下文 | ✅ M0-4 滑动窗口 40 条 |
+| 一键启动 | ✅ M0-6 uh dev up |
+| 健康检查 | ✅ /health /ready（含 memory 检查） |
+
 ## 下一步
-M0-4 Redis 短期记忆（#10）/ M0-5 Web UI 最小版（#11，依赖 M0-3 已满足）。实现可派 Codex（B 路径 GUI 发起）或 DSH 直做。A1 与事件命名待 M1-1 裁决。
+M1 能力期：M1-1 内部 RPC+事件总线+信封（#13，先决 A1 检索接口形态 + 事件命名 2/3 段裁决）→ M1-2 MCP / M1-3 检索 / M1-4 编排。实现可派 Codex（B 路径）或 DSH 直做。
