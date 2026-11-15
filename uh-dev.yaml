@@ -1,0 +1,16 @@
+# UH! 本地开发配置（§7.2 / §11.4）
+mode: local
+ui:
+  mode: web          # web / desktop / both
+  port: 8080
+desktop:
+  shell: tauri       # M3-6 实装
+llm:
+  provider: openai
+  model: gpt-4o
+  base_url: https://api.openai.com/v1
+memory:
+  short_term: redis://localhost:6379
+  long_term: chroma://./data/vector
+logging:
+  level: info

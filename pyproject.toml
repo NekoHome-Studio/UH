@@ -12,8 +12,11 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.scripts]
+uh = "kernel.cli:main"
+
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8", "httpx>=0.27", "redis>=5", "fakeredis>=2", "pyyaml>=6"]
 
 [tool.setuptools]
 packages = ["kernel"]
