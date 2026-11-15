@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from . import __version__, tracing
 from .logging import get_logger, log_event, setup_logging
 from .router import classify
+from .memory import create_short_term_memory
 
 setup_logging()
 log = get_logger("kernel.http")
@@ -27,6 +28,7 @@ class RouteRequest(BaseModel):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
+    app.state.memory = create_short_term_memory()
 
     @app.middleware("http")
     async def trace_middleware(request: Request, call_next):
@@ -46,8 +48,14 @@ def create_app() -> FastAPI:
 
     @app.get("/ready")
     async def ready():
-        # M0 无外部依赖；M0-4 起在此注册 Redis 等就绪检查
-        return {"status": "ok", "version": __version__, "checks": {}}
+        checks = {}
+        try:
+            await app.state.memory.key_count()
+            checks["memory"] = "ok"
+        except Exception:
+            checks["memory"] = "error"
+        status = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+        return {"status": status, "version": __version__, "checks": checks}
 
     @app.post("/api/v1/dev/route", include_in_schema=False)
     async def dev_route(req: RouteRequest):
