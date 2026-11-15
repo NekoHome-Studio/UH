@@ -54,7 +54,7 @@ const badEventRefs = [];
 const nonEventTokens = new Set(["memory.short_term.read", "memory.short_term.write", "fs.sandbox.read", "fs.sandbox.write", "fs.host.read", "memory.max", "cpu.max", "pids.max", "tool.network_allow_hosts", "kernel.task", "mcp.tool"]);
 const isNonEvent = (t) => {
   if (nonEventTokens.has(t)) return true;
-  if (/\.(json|md|yaml|yml|csv|mjs|cjs|ps1|txt|docx|png|sh)$/.test(t)) return true;
+  if (/\.(json|md|yaml|yml|csv|mjs|cjs|ps1|txt|docx|png|sh|py|pyc|toml|lock)$/.test(t)) return true;
   const seg = t.split(".");
   if (seg.length === 3 && eventAllow.has(seg[0] + "." + seg[1])) return true; // 已知事件上的字段路径
   return false;
