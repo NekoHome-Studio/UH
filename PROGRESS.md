@@ -104,5 +104,9 @@
 | 一键启动 | ✅ M0-6 uh dev up |
 | 健康检查 | ✅ /health /ready（含 memory 检查） |
 
+### 2026-11-15 · A1 裁决：检索走 MCP Server
+- 用户裁决 A1 = MCP Server；ADR-001 记录（docs/contracts/adr/）；基线评估 A1 更新为已决
+- 检索（LlamaIndex）= 独立 MCP Server（search/index_document/query），内核经 MCP Host 调用；M1-2 为检索前置；用户 API 不变
+
 ## 下一步
-M1 能力期：M1-1 内部 RPC+事件总线+信封（#13，先决 A1 检索接口形态 + 事件命名 2/3 段裁决）→ M1-2 MCP / M1-3 检索 / M1-4 编排。实现可派 Codex（B 路径）或 DSH 直做。
+M1 能力期：M1-1 内部 RPC+事件总线+信封（#13）。A1 已决（MCP Server，ADR-001）；剩余前置：事件命名 2/3 段裁决。M1-2 MCP Host（#14）为检索与工具共同前置。实现可派 Codex（B 路径）或 DSH 直做。
