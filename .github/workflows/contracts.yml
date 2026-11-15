@@ -1,9 +1,9 @@
 name: contracts
 on:
   push:
-    paths: ["docs/contracts/**", "scripts/validate-contracts.mjs", ".github/workflows/contracts.yml"]
+    paths: ["docs/contracts/**", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", ".github/workflows/contracts.yml"]
   pull_request:
-    paths: ["docs/contracts/**", "scripts/validate-contracts.mjs", ".github/workflows/contracts.yml"]
+    paths: ["docs/contracts/**", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", ".github/workflows/contracts.yml"]
 jobs:
   validate:
     runs-on: ubuntu-latest
