@@ -18,6 +18,7 @@
 | M0-1 | 内核骨架：trace_id + JSON 日志 + health/ready | 已完成 · 服务器实测 | kernel/ + tests 15/15 + 192.168.0.28:8080 常驻 |
 | M0-2 | 规则版路由（chat/search/tool） | 已完成 · 首个 Codex 协作 | router.py 100/100 + 24/24 + 跨机实测 |
 | M0-3 | LLM 调用封装（流式/重试/Token） | 已完成 · DSH 实现 | llm.py + 7 mock 测试，31/31 + 服务器实测 |
+| M0-4 | Redis 短期记忆（滑动窗口） | 已完成 · DSH 实现 | memory.py + 6 fakeredis 测试，37/37 + /ready 接入 |
 
 ## 执行日志
 
