@@ -26,7 +26,7 @@ const activeCodes = [...errorsMd.split("## 2.")[1].split("## 3.")[0].matchAll(/^
 const deprecatedCodes = [...errorsMd.split("## 5.")[1].split("## 6.")[0].matchAll(/^\| (UH-[A-Z]+-\d{4}) \|/gm)].map(m => m[1]);
 const evSchema = JSON.parse(read("docs/contracts/events.schema.json"));
 const extEvents = evSchema.properties.event.enum;
-const internalEvents = ["kernel.request.received","kernel.route.decided","capability.invoked","capability.finished","capability.failed","memory.write","llm.delta","mcp.tool.call","mcp.tool.result","tool.confirm","tool.confirm.resolved","kernel.task.cancelled","kernel.task.resumed","kernel.task.degraded","kernel.task.finished","kernel.task.failed","cua.yield","route.decided"];
+const internalEvents = ["kernel.request.received","kernel.route.decided","capability.invoked","capability.finished","capability.failed","memory.write","llm.delta","mcp.tool.call","mcp.tool.result","tool.confirm","tool.confirm.resolved","kernel.task.cancelled","kernel.task.resumed","kernel.task.degraded","kernel.task.finished","kernel.task.failed","cua.yield","route.decided","route.fallback","request.received","request.finished","llm.call","llm.error","llm.retry","llm.usage"];
 const eventAllow = new Set([...extEvents, ...internalEvents]);
 
 // 1) 错误码：未知码硬失败；deprecated 仅限历史/修订语境
