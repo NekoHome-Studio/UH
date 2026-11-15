@@ -52,7 +52,14 @@ Codex 走 ChatGPT 后端，本机需代理才能到 chatgpt.com / api.openai.com
 - 密钥只注入单进程，不写脚本/仓库/日志。
 - 服务器部署仍由 DSH 经 ssh ipc 执行（Codex 不碰生产）。
 
-## 7. 首个协作任务（已备好，待连通）
+## 7. 发起方式（A / B 二选一）
+
+- **A · CLI 派发**：DSH 经 relay/codex exec 派发，会话在 Codex CLI（`codex resume <id>` 查看）。已验证（brief 0001）。
+- **B · GUI 发起（应用可见）**：DSH 备好 brief → 用户在 Codex 桌面应用的 UH! 项目里新建会话贴入 brief 发起 → 会话显示在应用列表 → Codex 完成后 DSH 审 diff + 门禁 + 落提交。
+  - 原因：Codex 桌面 GUI 与 CLI 是两套会话存储，CLI exec 会话不进 GUI 列表；经 GUI 项目发起才在应用可见。
+  - 步骤：Codex 应用 → 左侧 UH! 项目 → 新聊天 → 贴 briefs/NNNN-*.md 全文 → 发送 → 完成后通知 DSH 审查。
+
+## 8. 首个协作任务（已备好，待连通）
 
 briefs/0001-m0-2-route-endpoint.md：修复 M0-2 dev/route 端点 3 个失败测试（路由分类已 100/100，仅端点层 bug）。
 这是验证协作链路的最小真实任务：Codex 修 → DSH 审 → 跑 pytest → 落提交 → 部署服务器。
