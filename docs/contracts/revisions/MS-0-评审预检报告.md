@@ -14,7 +14,7 @@
 | 4 | 文档内链可达 | PASS | 全部相对链接 0 死链 |
 | 5 | 数量基准 | PASS | issues 39 / issues.csv 39 / issue-map.csv 39 / 事件正例 18 / 负例 7 |
 | 6 | 信封必填字段一致 | PASS | event_id/event/version/task_id/trace_id/ts/payload，schema 与 asyncapi 一致 |
-| 7 | 契约区无占位符残留 | PASS | docs/contracts 无 {{ID}}（uh-issues/issues 按设计保留供脚本回填） |
+| 7 | 契约区无占位符残留 | PASS | docs/contracts 无双花括号 ID 占位符（uh-issues/issues 按设计保留供脚本回填） |
 | 8 | SBX 引用受控 | PASS | 01~09 均在 sandbox.md 定义；M2-2/M3-7 引用无越界 |
 
 ## 扫描器校准记录（三轮）
