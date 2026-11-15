@@ -15,6 +15,7 @@
 | P0-5 | 部署暴露面与 RBAC 收紧 | 已交付 · 待评审 | deploy-hardening.md + P0-5 修订对照 |
 | P0-6 | 机器可读契约与图 | 已交付 · 待评审 | openapi.yaml + asyncapi.yaml + diagrams.md + CI 工作流 + 校验脚本 |
 | M1-9 | 事件字典冻结 + 总线映射 + UI 状态机（新增） | 待开始（MS-2，Blocked by P0-3/M1-1） | — |
+| M0-1 | 内核骨架：trace_id + JSON 日志 + health/ready | 已完成 · 服务器实测 | kernel/ + tests 15/15 + 192.168.0.28:8080 常驻 |
 
 ## 执行日志
 
@@ -67,5 +68,11 @@
 - 关闭 GitHub #1~#6，打 tag contract-v0.1.0
 - 用户已备服务器，待提供连接方式后接入测试（M0 开发环境 / M3 部署靶机候选）
 
+### 2026-11-15 · M0-1 内核骨架（#7 完成，首个实现任务）
+- kernel/ 三模块（tracing/logging/main）+ 15 单测；trace_id 发射时绑定记录、外部 X-Trace-Id 透传、响应回写
+- 部署 Win10 工控机 192.168.0.28:8080（ssh ipc，D:\uh），WMI 常驻；跨机 health/ready 200 + 日志链路串联实测通过
+- 固化 scripts/server-deploy.ps1 + docs/runbooks/server-m0.md（NO_PROXY pip + WMI 两坑）
+- 关闭 #7；M0-2/M0-3/M0-4/M0-6/M1-1 解锁
+
 ## 下一步
-M0-1 内核骨架（#7）：HTTP 服务 + trace_id + 统一 JSON 日志 + /health /ready。A1 检索接口形态与事件命名 2/3 段在 M1-1 冻结前裁决。
+M0-2 规则版路由（#8）+ M0-3 LLM 封装（#9）可并行启动（均依赖 M0-1 已满足）。A1 检索接口形态与事件命名 2/3 段在 M1-1 冻结前裁决。
