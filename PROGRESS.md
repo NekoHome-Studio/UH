@@ -19,6 +19,7 @@
 | M0-2 | 规则版路由（chat/search/tool） | 已完成 · 首个 Codex 协作 | router.py 100/100 + 24/24 + 跨机实测 |
 | M0-3 | LLM 调用封装（流式/重试/Token） | 已完成 · DSH 实现 | llm.py + 7 mock 测试，31/31 + 服务器实测 |
 | M0-4 | Redis 短期记忆（滑动窗口） | 已完成 · DSH 实现 | memory.py + 6 fakeredis 测试，37/37 + /ready 接入 |
+| M0-5 | Web UI 最小版（Prompt-bar-first+流式） | 已完成 · DSH 实现 | ui/index.html + tasks.py SSE，42/42 + 跨机实测 |
 
 ## 执行日志
 
