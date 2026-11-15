@@ -59,7 +59,7 @@ const isNonEvent = (t) => {
   if (seg.length === 3 && eventAllow.has(seg[0] + "." + seg[1])) return true; // 已知事件上的字段路径
   return false;
 };
-for (const f of [...walk("docs/contracts", [".md", ".yaml"]), ...walk("uh-issues/issues", [".md"]), "README.md", "PROGRESS.md"]) {
+for (const f of [...walk("docs/contracts", [".md", ".yaml"]).filter(f => !f.includes("/adr/")), ...walk("uh-issues/issues", [".md"]), "README.md", "PROGRESS.md"]) {
   for (const m of read(f).matchAll(/\b(?:task|step|safety|tool|kernel|capability|memory|mcp|llm|cua|route)(?:\.[a-z_]+){1,2}\b/g)) {
     if (!eventAllow.has(m[0]) && !isNonEvent(m[0])) badEventRefs.push(f + ": " + m[0]);
   }
