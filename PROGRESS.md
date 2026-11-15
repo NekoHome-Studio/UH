@@ -16,6 +16,7 @@
 | P0-6 | 机器可读契约与图 | 已交付 · 待评审 | openapi.yaml + asyncapi.yaml + diagrams.md + CI 工作流 + 校验脚本 |
 | M1-9 | 事件字典冻结 + 总线映射 + UI 状态机（新增） | 待开始（MS-2，Blocked by P0-3/M1-1） | — |
 | M0-1 | 内核骨架：trace_id + JSON 日志 + health/ready | 已完成 · 服务器实测 | kernel/ + tests 15/15 + 192.168.0.28:8080 常驻 |
+| M0-2 | 规则版路由（chat/search/tool） | 已完成 · 首个 Codex 协作 | router.py 100/100 + 24/24 + 跨机实测 |
 
 ## 执行日志
 
@@ -74,5 +75,11 @@
 - 固化 scripts/server-deploy.ps1 + docs/runbooks/server-m0.md（NO_PROXY pip + WMI 两坑）
 - 关闭 #7；M0-2/M0-3/M0-4/M0-6/M1-1 解锁
 
+### 2026-11-15 · M0-2 规则路由（#8 完成，首个 DSH×Codex 协作闭环）
+- 梯子开启后 Codex 连通（代理 127.0.0.1:65532，CODEX_LINK_OK）
+- 协作链路跑通：DSH brief → Codex 持久会话实现（01a1df25-ce11-7900-a0ef-38a7f0240625）→ DSH 审 diff + 门禁 → 落提交 ef5eb67
+- Codex 精准定位 dev/route 422 根因（内联模型+延迟注解）并最小修复；100/100 分类 + 24/24 套件 + 跨机实测
+- 工作流文档 docs/workflows/dsh-codex-collaboration.md + 连通助手 scripts/codex-connect.ps1 就位
+
 ## 下一步
-M0-2 规则版路由（#8）+ M0-3 LLM 封装（#9）可并行启动（均依赖 M0-1 已满足）。A1 检索接口形态与事件命名 2/3 段在 M1-1 冻结前裁决。
+M0-3 LLM 封装（#9，需 OpenAI 兼容端点+密钥）/ M0-4 Redis 短期记忆（#10）。后续实现任务可继续派给 Codex（DSH 审）。A1 与事件命名待 M1-1 裁决。
