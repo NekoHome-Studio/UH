@@ -1,6 +1,13 @@
 # 本地工作产物（docx 文本提取、校验脚本、临时文件）
 .work/
 
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
 # 系统文件
 Thumbs.db
 Desktop.ini
