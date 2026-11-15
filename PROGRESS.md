@@ -17,6 +17,7 @@
 | M1-9 | 事件字典冻结 + 总线映射 + UI 状态机（新增） | 待开始（MS-2，Blocked by P0-3/M1-1） | — |
 | M0-1 | 内核骨架：trace_id + JSON 日志 + health/ready | 已完成 · 服务器实测 | kernel/ + tests 15/15 + 192.168.0.28:8080 常驻 |
 | M0-2 | 规则版路由（chat/search/tool） | 已完成 · 首个 Codex 协作 | router.py 100/100 + 24/24 + 跨机实测 |
+| M0-3 | LLM 调用封装（流式/重试/Token） | 已完成 · DSH 实现 | llm.py + 7 mock 测试，31/31 + 服务器实测 |
 
 ## 执行日志
 
@@ -81,5 +82,10 @@
 - Codex 精准定位 dev/route 422 根因（内联模型+延迟注解）并最小修复；100/100 分类 + 24/24 套件 + 跨机实测
 - 工作流文档 docs/workflows/dsh-codex-collaboration.md + 连通助手 scripts/codex-connect.ps1 就位
 
+### 2026-11-15 · M0-3 LLM 封装（#9 完成）+ UH 主体确立
+- AGENTS.md 项目宪章确立 UH 为主体（DSH/Codex 共读，dsh-agent-instructions 加载）
+- M0-3 由 DSH 实现：kernel/llm.py（OpenAI 兼容流式 + 指数退避 + CAP-4xxx 映射 + Token 统计），7 mock 测试，本地+服务器 31/31，部署 192.168.0.28
+- 预检白名单补内核日志事件；verify-all 全过；关闭 #9
+
 ## 下一步
-M0-3 LLM 封装（#9，需 OpenAI 兼容端点+密钥）/ M0-4 Redis 短期记忆（#10）。后续实现任务可继续派给 Codex（DSH 审）。A1 与事件命名待 M1-1 裁决。
+M0-4 Redis 短期记忆（#10）/ M0-5 Web UI 最小版（#11，依赖 M0-3 已满足）。实现可派 Codex（B 路径 GUI 发起）或 DSH 直做。A1 与事件命名待 M1-1 裁决。
