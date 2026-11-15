@@ -118,5 +118,7 @@ check("8 SBX 引用受控（01~09 已定义）", sbxRefs.length === 0, "定义="
 
 const failed = results.filter(r => !r.ok);
 console.log(failed.length === 0 ? "PRECHECK_ALL_PASSED (" + results.length + " checks)" : "PRECHECK_FAILED=" + failed.length);
-fs.writeFileSync(path.join(ROOT, ".work/precheck-results.json"), JSON.stringify(results, null, 2));
+const _out = path.join(ROOT, ".work/precheck-results.json");
+fs.mkdirSync(path.dirname(_out), { recursive: true });
+fs.writeFileSync(_out, JSON.stringify(results, null, 2));
 process.exit(failed.length === 0 ? 0 : 1);

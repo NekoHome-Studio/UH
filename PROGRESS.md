@@ -108,5 +108,9 @@
 - 用户裁决 A1 = MCP Server；ADR-001 记录（docs/contracts/adr/）；基线评估 A1 更新为已决
 - 检索（LlamaIndex）= 独立 MCP Server（search/index_document/query），内核经 MCP Host 调用；M1-2 为检索前置；用户 API 不变
 
+### 2026-11-15 · 事件命名裁决 B + CI 修复
+- 用户裁决事件命名 = B（内部总线统一三段，新名+旧名 deprecated）；ADR-002 记录；外部 WS 冻结契约不变
+- CI 修复：review-precheck 写 .work/precheck-results.json 在 CI 因 .work 不存在 ENOENT 崩溃（本地有 .work 故通过）→ mkdir recursive；M1 前置裁决全清
+
 ## 下一步
-M1 能力期：M1-1 内部 RPC+事件总线+信封（#13）。A1 已决（MCP Server，ADR-001）；剩余前置：事件命名 2/3 段裁决。M1-2 MCP Host（#14）为检索与工具共同前置。实现可派 Codex（B 路径）或 DSH 直做。
+M1 能力期：M1-1 内部 RPC+事件总线+信封（#13）。前置裁决全清：A1=MCP Server（ADR-001）、事件命名=三段（ADR-002）。M1-2 MCP Host（#14）为检索与工具共同前置。实现可派 Codex（B 路径）或 DSH 直做。
