@@ -27,6 +27,7 @@
 | M1-4 | LangGraph 编排（Checkpoint+resume） | 已完成 · Codex 实现 DSH 审 | orchestration.py + 5 测试，80/80 |
 | M1-5 | 长期记忆（分级+加密+无痕） | 已完成 · Codex 实现 DSH 审 | long_term_memory.py + 4 测试，84/84 |
 | M1-6 | 错误码响应包裹（统一+幂等+分页） | 已完成 · Codex 实现 DSH 审 | main.py 包裹 + 6 测试，90/90 |
+| M1-9 | 事件字典冻结+映射+UI 状态机 | 已完成 · 冻结 contract-events-v1 | event_mapping.py + state-machine.js + 6 测试，96/96 |
 
 ## 执行日志
 
@@ -172,5 +173,10 @@
 - briefs/0008-m1-9-event-dictionary.md 备好（内部→外部映射带 span_id+UI 10 状态机+CI 双向校验+审计反查；冻结打 contract-events-v1 由 DSH 执行）
 - 用户 GUI 发起，DSH 待审
 
+### 2026-11-16 · M1-9 事件字典冻结（B 路径，contract-events-v1）
+- Codex 实现 kernel/event_mapping.py（内部→外部映射+span_id 双向溯源+未知拒推）+ ui/state-machine.js（10 状态纯函数）+ CI B2 双向门禁；6 测试
+- DSH 审 + 门禁 96/96；commit 6ebdbb7；tag contract-events-v1；关闭 #21
+- 部署要点：服务器需 docs/contracts（event_mapping 导入读 schema），已补
+
 ## 下一步
-M1-9 事件字典（#21，Codex 实现中）→ M1-7 WS（#19）/ M1-8 高危确认（#20）。M1 进度 6/8。
+M1-7 WS 事件（#19，18 事件+after_event_id 回放+终态保证，字典已冻结可实装）/ M1-8 高危确认（#20）。M1 进度 7/9。可派 Codex（B 路径）或 DSH 直做。
