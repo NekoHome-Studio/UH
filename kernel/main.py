@@ -12,7 +12,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -53,8 +54,45 @@ class ResumeRequest(BaseModel):
     checkpoint_id: str | None = None
 
 
+def _error_payload(
+    code: str,
+    message: str,
+    *,
+    retryable: bool = False,
+    retry_after_ms: int = 0,
+    detail: dict | None = None,
+) -> dict:
+    """Build the error shape defined by docs/contracts/errors.md."""
+    return {
+        "code": code,
+        "message": message,
+        "retryable": retryable,
+        "retry_after_ms": retry_after_ms,
+        "detail": dict(detail or {}),
+    }
+
+
+def _envelope(data=None, *, error: dict | None = None, **meta) -> dict:
+    """Build a business response; the middleware fills the request trace ID."""
+    return {"data": data, "meta": meta, "error": error}
+
+
+def _error_for_status(status_code: int, message: str = "请求失败", detail: dict | None = None) -> dict:
+    mapping = {
+        400: ("UH-USR-1003", False),
+        401: ("UH-USR-1001", False),
+        403: ("UH-USR-1002", False),
+        404: ("UH-USR-1003", False),
+        429: ("UH-USR-1004", True),
+    }
+    code, retryable = mapping.get(status_code, ("UH-KRN-5001", False))
+    return _error_payload(code, message, retryable=retryable, detail=detail)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
+    app.state.idempotency_cache = {}
+    app.state.plugins = []
     app.state.memory = create_short_term_memory()
     app.state.long_term_memory = create_long_term_memory()
     app.state.llm = create_llm_client()
@@ -127,16 +165,111 @@ def create_app() -> FastAPI:
             app.state.retrieval_ready = False
             log_event(log, logging.WARNING, "capability.module.degraded", module="retrieval", reason=str(exc))
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError):
+        fields = []
+        for item in exc.errors():
+            loc = ".".join(str(part) for part in item.get("loc", ()) if part != "body")
+            fields.append({"field": loc or "request", "reason": item.get("msg", "invalid value")})
+        return Response(
+            content=json.dumps(_envelope(
+                error=_error_payload("UH-USR-1003", "请求参数校验失败", detail={"fields": fields}),
+            ), ensure_ascii=False),
+            status_code=400,
+            media_type="application/json",
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(request: Request, exc: Exception):
+        log.exception("unhandled business exception", exc_info=exc)
+        return Response(
+            content=json.dumps(_envelope(
+                error=_error_payload("UH-KRN-5001", "内核未捕获异常"),
+            ), ensure_ascii=False),
+            status_code=500,
+            media_type="application/json",
+        )
+
     @app.middleware("http")
     async def trace_middleware(request: Request, call_next):
         trace_id = request.headers.get("x-trace-id") or tracing.new_trace_id()
         with tracing.request_context(trace_id):
             log_event(log, logging.INFO, "request.received", method=request.method, path=request.url.path)
             start = time.perf_counter()
-            response: Response = await call_next(request)
+            idempotency_key = request.headers.get("Idempotency-Key") if request.method == "POST" else None
+            cache_key = (request.method, request.url.path, idempotency_key) if idempotency_key else None
+            is_replay = bool(cache_key and cache_key in app.state.idempotency_cache)
+            if is_replay:
+                cached = app.state.idempotency_cache[cache_key]
+                response = Response(
+                    content=cached["body"],
+                    status_code=cached["status_code"],
+                    headers=cached["headers"],
+                    media_type=cached["media_type"],
+                )
+            else:
+                try:
+                    response = await call_next(request)
+                except Exception as exc:
+                    log.exception("unhandled business exception", exc_info=exc)
+                    response = Response(
+                        content=json.dumps(_envelope(
+                            error=_error_payload("UH-KRN-5001", "内核未捕获异常"),
+                        ), ensure_ascii=False),
+                        status_code=500,
+                        media_type="application/json",
+                    )
             latency_ms = round((time.perf_counter() - start) * 1000, 2)
             log_event(log, logging.INFO, "request.finished", method=request.method, path=request.url.path, status=response.status_code, latency_ms=latency_ms)
-            response.headers["X-Trace-Id"] = trace_id
+            content_type = response.headers.get("content-type", "")
+            is_ops = request.url.path in {"/health", "/ready", "/metrics"}
+            is_stream = "text/event-stream" in content_type or request.url.path.endswith("/stream")
+            # This hidden development probe predates the public API envelope and
+            # is kept raw for the existing router regression suite.
+            is_legacy_dev_probe = request.url.path == "/api/v1/dev/route" and response.status_code < 400
+            if not is_replay and not is_ops and not is_stream and not is_legacy_dev_probe and "application/json" in content_type:
+                body = getattr(response, "body", None)
+                if body is None and hasattr(response, "body_iterator"):
+                    chunks = [chunk async for chunk in response.body_iterator]
+                    body = b"".join(chunks)
+                try:
+                    payload = json.loads(body or b"null")
+                except (TypeError, json.JSONDecodeError):
+                    payload = None
+                if isinstance(payload, dict) and {"data", "meta", "error"}.issubset(payload):
+                    normalized = dict(payload)
+                    normalized["meta"] = dict(payload.get("meta") or {})
+                    normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
+                    if normalized["error"] is not None:
+                        normalized["error"] = _error_payload(
+                            normalized["error"].get("code", "UH-KRN-5001"),
+                            normalized["error"].get("message", "请求失败"),
+                            retryable=bool(normalized["error"].get("retryable", False)),
+                            retry_after_ms=int(normalized["error"].get("retry_after_ms") or 0),
+                            detail=normalized["error"].get("detail") or {},
+                        )
+                elif response.status_code >= 400:
+                    message = payload.get("detail", "请求失败") if isinstance(payload, dict) else "请求失败"
+                    normalized = _envelope(error=_error_for_status(response.status_code, str(message)))
+                    normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
+                else:
+                    normalized = _envelope(payload)
+                    normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
+                body = json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                headers = {
+                    key: value for key, value in response.headers.items()
+                    if key.lower() not in {"content-length", "transfer-encoding", "content-type"}
+                }
+                response = Response(content=body, status_code=response.status_code, headers=headers, media_type="application/json")
+                if cache_key:
+                    app.state.idempotency_cache[cache_key] = {
+                        "body": body,
+                        "status_code": response.status_code,
+                        "headers": {**dict(response.headers), "X-Trace-Id": trace_id},
+                        "media_type": "application/json",
+                    }
+            if not is_replay:
+                response.headers["X-Trace-Id"] = trace_id
             return response
 
     @app.get("/health")
@@ -169,7 +302,35 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/memory/short-term")
     async def get_short_term_memory(session_id: str):
         entries = await app.state.memory.get_context(session_id)
-        return {"data": {"session_id": session_id, "entries": entries}, "meta": {}, "error": None}
+        return _envelope({"session_id": session_id, "entries": entries})
+
+    @app.get("/api/v1/sessions/{session_id}/messages")
+    async def list_messages(
+        session_id: str,
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=100),
+    ):
+        entries = await app.state.memory.get_context(session_id)
+        total = len(entries)
+        start = (page - 1) * page_size
+        messages = [
+            {
+                "message_id": f"{session_id}_{start + index + 1}",
+                "role": entry.get("role", "user"),
+                "content": entry.get("content", ""),
+                "created_at": datetime.fromtimestamp(float(entry.get("ts", time.time())), timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            }
+            for index, entry in enumerate(entries[start:start + page_size])
+        ]
+        return _envelope({"messages": messages, "total": total, "has_more": start + page_size < total})
+
+    @app.get("/plugins")
+    @app.get("/api/v1/plugins")
+    async def list_plugins(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+        total = len(app.state.plugins)
+        start = (page - 1) * page_size
+        plugins = app.state.plugins[start:start + page_size]
+        return _envelope({"plugins": plugins, "total": total, "has_more": start + page_size < total})
 
     @app.delete("/memory/long-term")
     @app.delete("/api/v1/memory/long-term")
@@ -177,8 +338,8 @@ def create_app() -> FastAPI:
         try:
             count = app.state.long_term_memory.purge(before)
         except (TypeError, ValueError) as exc:
-            return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1003", "message": str(exc), "retryable": False}}), status_code=400, media_type="application/json")
-        return {"data": {"purged_count": count, "before": before}, "meta": {}, "error": None}
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", str(exc))), ensure_ascii=False), status_code=400, media_type="application/json")
+        return _envelope({"purged_count": count, "before": before})
 
     @app.get("/memory/export")
     @app.get("/api/v1/memory/export")
@@ -188,8 +349,8 @@ def create_app() -> FastAPI:
             expected = os.environ.get("UH_MEMORY_EXPORT_TOKEN")
             authorized = bool(expected and request.headers.get("X-UH-Memory-Export-Authorization") == expected)
             if not authorized:
-                return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1002", "message": "需要长期记忆导出授权", "retryable": False}}), status_code=403, media_type="application/json")
-        return {"data": {"entries": app.state.long_term_memory.export(authorize_sensitive=authorized)}, "meta": {}, "error": None}
+                return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "需要长期记忆导出授权")), ensure_ascii=False), status_code=403, media_type="application/json")
+        return _envelope({"entries": app.state.long_term_memory.export(authorize_sensitive=authorized)})
 
     @app.post("/api/v1/dev/route", include_in_schema=False)
     async def dev_route(req: RouteRequest):
@@ -198,7 +359,7 @@ def create_app() -> FastAPI:
             d = classify(req.content, req.mode)
         except ValueError:
             return Response(
-                content='{"data":null,"meta":{},"error":{"code":"UH-USR-1003","message":"invalid mode","retryable":false}}',
+                content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "invalid mode")), ensure_ascii=False),
                 status_code=400, media_type="application/json")
         log_event(log, logging.INFO, "kernel.route.decided", task_type=d.task_type, mode=d.mode, rule=d.rule, confidence=d.confidence)
         if d.fallback:
@@ -213,31 +374,31 @@ def create_app() -> FastAPI:
     async def create_session():
         sid = "uh_ses_" + secrets.token_hex(16)
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-        return {"data": {"session_id": sid, "status": "active", "created_at": now}, "meta": {"trace_id": tracing.new_trace_id()}, "error": None}
+        return _envelope({"session_id": sid, "status": "active", "created_at": now})
 
     @app.post("/api/v1/sessions/{session_id}/messages", status_code=202)
     async def send_message(session_id: str, req: MessageRequest):
         task_id, trace_id = app.state.tasks.create(session_id, req.content, req.mode, req.context)
-        return {"data": {"task_id": task_id, "stream_url": "/api/v1/tasks/" + task_id + "/stream", "trace_id": trace_id}, "meta": {"trace_id": trace_id}, "error": None}
+        return _envelope({"task_id": task_id, "stream_url": "/api/v1/tasks/" + task_id + "/stream", "trace_id": trace_id})
 
     @app.get("/api/v1/tasks/{task_id}")
     async def get_task(task_id: str):
         st = app.state.tasks.status(task_id)
         if st is None:
-            return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1003", "message": "task not found", "retryable": False}}), status_code=404, media_type="application/json")
-        return {"data": st, "meta": {}, "error": None}
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
+        return _envelope(st)
 
     @app.post("/api/v1/tasks/{task_id}/resume")
     async def resume_task(task_id: str, req: ResumeRequest | None = None):
         result = app.state.tasks.resume(task_id, req.checkpoint_id if req else None)
         if result is None:
-            return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1003", "message": "task or checkpoint not found", "retryable": False}}), status_code=404, media_type="application/json")
-        return {"data": result, "meta": {"trace_id": app.state.tasks.tasks[task_id]["trace_id"]}, "error": None}
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task or checkpoint not found")), ensure_ascii=False), status_code=404, media_type="application/json")
+        return _envelope(result)
 
     @app.post("/api/v1/dev/capability/{name}/toggle")
     async def toggle_cap(name: str, available: bool = True):
         app.state.rpc.set_available(name, available)
-        return {"data": {"name": name, "available": app.state.rpc.is_available(name)}, "meta": {}, "error": None}
+        return _envelope({"name": name, "available": app.state.rpc.is_available(name)})
 
     @app.get("/api/v1/tasks/{task_id}/stream")
     async def task_stream(task_id: str):
