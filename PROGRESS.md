@@ -22,6 +22,7 @@
 | M0-5 | Web UI 最小版（Prompt-bar-first+流式） | 已完成 · DSH 实现 | ui/index.html + tasks.py SSE，42/42 + 跨机实测 |
 | M0-6 | CLI uh dev up/down/logs/reset | 已完成 · DSH 实现 | cli.py + uh-dev.yaml，50/50 + 跨平台 |
 | M1-1 | 内部 RPC+事件总线+信封 | 已完成 · 冻结 contract-internal-v1 | protocol.py + 14 测试，64/64 |
+| M1-2 | MCP Host（tools/list+call） | 已完成 · Codex 实现 DSH 审 | mcp.py + 5 测试，69/69 |
 
 ## 执行日志
 
@@ -122,5 +123,10 @@
 - briefs/0003-m1-2-mcp-host.md 备好（MCP Host：tools/list+call+超时取消+256KB截断+幂等重试，mock 测试，集成 CapabilityRegistry）
 - 用户在 Codex GUI 的 UH! 项目发起；DSH 待审 diff + 门禁 + 落地
 
+### 2026-11-16 · M1-2 MCP Host 完成（B 路径 Codex 协作闭环）
+- Codex GUI 实现 kernel/mcp.py（557 行，stdio/in-process/HTTP 传输，超时主动取消，256KB 截断，幂等重试，Registry 集成，脱敏）+ 5 测试
+- DSH 逐段审 diff + 独立门禁，本地+服务器 69/69；commit 9dba4b6；关闭 #14
+- B 路径验证：用户 GUI 发起 brief → Codex 实现不提交 → DSH 审查落地
+
 ## 下一步
-M1-2 MCP Host（#14，Codex 实现中）→ M1-3 检索 MCP Server（#15，ADR-001）/ M1-4 LangGraph 编排（#16）。
+M1-3 检索 MCP Server（#15，ADR-001，经 M1-2 Host 接 LlamaIndex）/ M1-4 LangGraph 编排（#16）/ M1-5 长期记忆（#17）。可派 Codex（B 路径）或 DSH 直做。
