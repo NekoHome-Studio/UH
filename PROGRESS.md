@@ -23,6 +23,7 @@
 | M0-6 | CLI uh dev up/down/logs/reset | 已完成 · DSH 实现 | cli.py + uh-dev.yaml，50/50 + 跨平台 |
 | M1-1 | 内部 RPC+事件总线+信封 | 已完成 · 冻结 contract-internal-v1 | protocol.py + 14 测试，64/64 |
 | M1-2 | MCP Host（tools/list+call） | 已完成 · Codex 实现 DSH 审 | mcp.py + 5 测试，69/69 |
+| M1-3 | 检索 MCP Server（LlamaIndex/Chroma） | 已完成 · Codex 实现 DSH 审 | retrieval.py + 6 测试 + bench，75/75 |
 
 ## 执行日志
 
@@ -132,5 +133,10 @@
 - briefs/0004-m1-3-retrieval-mcp.md 备好（检索 MCP Server：LlamaIndex+Chroma，search/index_document/query，untrusted_content 防注入，CAP-3001 降级，经 M1-2 Host 接入，确定性 embedding 离线测试 + 基准 harness）
 - ADR-001 落地：检索从内部 RPC 改 MCP Server；用户 GUI 发起，DSH 待审
 
+### 2026-11-16 · M1-3 检索 MCP Server 完成（B 路径，ADR-001 落地）
+- Codex 实现 kernel/retrieval.py（MCP Server search/index_document/query，LlamaIndex/Chroma+确定性回退，untrusted_content 防注入，CAP-3001 降级）+ 6 测试 + 诚实 bench
+- DSH 审 diff + 门禁 75/75；commit d2dfd66；关闭 #15；检索经 M1-2 Host 接入（ADR-001）
+- 遗留：真实 embedding 完整基准待集成；on_event 弃用提示可迁 lifespan
+
 ## 下一步
-M1-3 检索 MCP Server（#15，Codex 实现中）→ M1-4 LangGraph 编排（#16）/ M1-5 长期记忆（#17）。
+M1-4 LangGraph 编排（#16）/ M1-5 长期记忆（#17，依赖 M1-3）/ M1-6 错误码响应包裹（#18）。可派 Codex（B 路径）或 DSH 直做。
