@@ -51,7 +51,7 @@ const eventsMd = read("docs/contracts/events.md");
 const mdEvents = [...eventsMd.split("## 3.")[1].split("## 4.")[0].matchAll(/\| ((?:(?:task|step|safety|tool)\.[a-z_]+)|delta) \|/g)].map(m => m[1]);
 const threeSource = JSON.stringify([...extEvents].sort()) === JSON.stringify([...aaEvents].sort()) && JSON.stringify([...extEvents].sort()) === JSON.stringify([...mdEvents].sort());
 const badEventRefs = [];
-const nonEventTokens = new Set(["memory.short_term.read", "memory.short_term.write", "fs.sandbox.read", "fs.sandbox.write", "fs.host.read", "memory.max", "cpu.max", "pids.max", "tool.network_allow_hosts", "kernel.task", "mcp.tool", "capability.module", "tool.confirmation", "memory.record", "llm.stream", "cua.session"]);
+const nonEventTokens = new Set(["memory.short_term.read", "memory.short_term.write", "fs.sandbox.read", "fs.sandbox.write", "fs.host.read", "memory.max", "cpu.max", "pids.max", "tool.network_allow_hosts", "kernel.task", "mcp.tool", "capability.module", "tool.confirmation", "memory.record", "llm.stream", "llm.generate", "cua.session"]);
 const isNonEvent = (t) => {
   if (nonEventTokens.has(t)) return true;
   if (/\.(json|md|yaml|yml|csv|mjs|cjs|ps1|txt|docx|png|sh|py|pyc|toml|lock)$/.test(t)) return true;
