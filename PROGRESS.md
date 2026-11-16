@@ -1,7 +1,7 @@
 # UH! 执行进度
 
 > 任务基线：uh-issues/（39 个 Issue，含新增 M1-9）· 计划 20 周 · 本文档随执行更新
-> 当前阶段：M0 骨架期完成（2026-11-15，#7~#12 全关闭，50/50 测试）→ 待进入 M1 能力期
+> 当前阶段：M1 能力期进行中（M1-1 内部协议完成，tag contract-internal-v1；#13 关闭）
 > 上游基线：docs/source/《Ultra-Harness技术文档_整合版_v3（润色校对）.docx》（2026-11-14 切换，v0.1.0 架构文档保留对照）
 
 ## 状态总览
@@ -21,6 +21,7 @@
 | M0-4 | Redis 短期记忆（滑动窗口） | 已完成 · DSH 实现 | memory.py + 6 fakeredis 测试，37/37 + /ready 接入 |
 | M0-5 | Web UI 最小版（Prompt-bar-first+流式） | 已完成 · DSH 实现 | ui/index.html + tasks.py SSE，42/42 + 跨机实测 |
 | M0-6 | CLI uh dev up/down/logs/reset | 已完成 · DSH 实现 | cli.py + uh-dev.yaml，50/50 + 跨平台 |
+| M1-1 | 内部 RPC+事件总线+信封 | 已完成 · 冻结 contract-internal-v1 | protocol.py + 14 测试，64/64 |
 
 ## 执行日志
 
@@ -112,5 +113,10 @@
 - 用户裁决事件命名 = B（内部总线统一三段，新名+旧名 deprecated）；ADR-002 记录；外部 WS 冻结契约不变
 - CI 修复：review-precheck 写 .work/precheck-results.json 在 CI 因 .work 不存在 ENOENT 崩溃（本地有 .work 故通过）→ mkdir recursive；M1 前置裁决全清
 
+### 2026-11-16 · M1-1 内部协议完成（冻结 contract-internal-v1）
+- kernel/protocol.py：Envelope+EventBus(三段命名)+CapabilityRegistry(RPC 超时降级)+StorageGuard；检索降级集成；events.md §6 只增登记
+- 14 新测试，本地+服务器 64/64；tag contract-internal-v1；关闭 #13
+- 修 CLI 健康检查代理绕过（ProxyHandler({})）+ 慢盘超时 45s
+
 ## 下一步
-M1 能力期：M1-1 内部 RPC+事件总线+信封（#13）。前置裁决全清：A1=MCP Server（ADR-001）、事件命名=三段（ADR-002）。M1-2 MCP Host（#14）为检索与工具共同前置。实现可派 Codex（B 路径）或 DSH 直做。
+M1 能力期：M1-2 MCP Host（#14，检索+工具共同前置）→ M1-3 检索 MCP Server（#15，ADR-001）/ M1-4 LangGraph 编排（#16）。实现可派 Codex（B 路径）或 DSH 直做。
