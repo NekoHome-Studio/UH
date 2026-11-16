@@ -74,9 +74,10 @@ def _terminate(pid: int) -> None:
 
 def _wait_health(port: int, timeout: float = 45.0) -> bool:
     deadline = time.time() + timeout
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # localhost 健康检查禁走系统代理
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:%d/health" % port, timeout=1) as r:
+            with opener.open("http://127.0.0.1:%d/health" % port, timeout=1) as r:
                 if r.status == 200:
                     return True
         except Exception:
