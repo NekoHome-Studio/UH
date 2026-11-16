@@ -178,5 +178,9 @@
 - DSH 审 + 门禁 96/96；commit 6ebdbb7；tag contract-events-v1；关闭 #21
 - 部署要点：服务器需 docs/contracts（event_mapping 导入读 schema），已补
 
+### 2026-11-16 · M1-7 派给 Codex（B 路径，M1 最重收尾）
+- briefs/0009-m1-7-websocket-events.md 备好（WS 连接鉴权+18 事件经 EventMapper+after_event_id 回放+终态保证+5min 窗口回退 4408+SEC-04 归属 4403+UI 切 WS）
+- 用户 GUI 发起，DSH 待审
+
 ## 下一步
-M1-7 WS 事件（#19，18 事件+after_event_id 回放+终态保证，字典已冻结可实装）/ M1-8 高危确认（#20）。M1 进度 7/9。可派 Codex（B 路径）或 DSH 直做。
+M1-7 WS（#19，Codex 实现中）→ M1-8 高危确认（#20，M1 最后一块）。M1 进度 7/9。
