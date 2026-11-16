@@ -158,5 +158,9 @@
 - DSH 重点审 L2 不语义索引（隐私策略落地）+ 门禁 84/84；commit 5f0d088；关闭 #17
 - L2 语义泄露风险裁决：加密内容不入向量索引，仅元数据过滤召回
 
+### 2026-11-16 · M1-6 派给 Codex（B 路径）
+- briefs/0007-m1-6-response-envelope.md 备好（{data,meta,error} 统一+meta.trace_id 必带+错误对齐 errors.md+Idempotency-Key 幂等+分页 total/has_more；ops 端点保持 plain）
+- 用户 GUI 发起，DSH 待审
+
 ## 下一步
-M1-6 错误码响应包裹（#18，{data,meta,error} 统一）/ M1-7 WS 事件（#19，18 事件+回放）/ M1-8 高危确认（#20）。M1 进度 5/8。可派 Codex（B 路径）或 DSH 直做。
+M1-6 响应包裹（#18，Codex 实现中）→ M1-7 WS（#19）/ M1-8 高危确认（#20）。M1 进度 5/8。
