@@ -24,6 +24,7 @@
 | M1-1 | 内部 RPC+事件总线+信封 | 已完成 · 冻结 contract-internal-v1 | protocol.py + 14 测试，64/64 |
 | M1-2 | MCP Host（tools/list+call） | 已完成 · Codex 实现 DSH 审 | mcp.py + 5 测试，69/69 |
 | M1-3 | 检索 MCP Server（LlamaIndex/Chroma） | 已完成 · Codex 实现 DSH 审 | retrieval.py + 6 测试 + bench，75/75 |
+| M1-4 | LangGraph 编排（Checkpoint+resume） | 已完成 · Codex 实现 DSH 审 | orchestration.py + 5 测试，80/80 |
 
 ## 执行日志
 
@@ -142,5 +143,10 @@
 - briefs/0005-m1-4-langgraph-orchestration.md 备好（LangGraph 状态机适配层+回退，Checkpoint PostgreSQL/SQLite/JSON，resume 不重复执行，deadline 取消，编排关闭不影响对话）
 - 用户 GUI 发起，DSH 待审
 
+### 2026-11-16 · M1-4 LangGraph 编排完成（B 路径，workflow 链路成立）
+- Codex 实现 kernel/orchestration.py（状态机适配层+fallback，Checkpoint SQLite/JSON，resume 不重跑，deadline 取消）+ 5 测试 + resume 端点
+- DSH 审 run/resume 正确性 + 门禁 80/80；commit 5e6d19e；关闭 #16
+- 遗留：PostgreSQL checkpoint 待 psycopg 集成（回退 SQLite）
+
 ## 下一步
-M1-4 LangGraph 编排（#16，Codex 实现中）→ M1-5 长期记忆（#17）/ M1-6 响应包裹（#18）。
+M1-5 长期记忆（#17，依赖 M1-3）/ M1-6 错误码响应包裹（#18）/ M1-7 WS 事件（#19）/ M1-8 高危确认（#20）。可派 Codex（B 路径）或 DSH 直做。
