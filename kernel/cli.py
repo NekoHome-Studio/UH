@@ -7,6 +7,7 @@ Desktop 壳（Tauri）M3-6 实装，M0 下 desktop/both 优雅降级为内核+We
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import socket
@@ -18,6 +19,8 @@ import webbrowser
 from pathlib import Path
 
 import yaml
+
+from .long_term_memory import create_long_term_memory
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / ".uh"
@@ -187,6 +190,30 @@ def dev_watch(args) -> int:
     return subprocess.call([sys.executable, "-m", "uvicorn", "kernel.main:app", "--host", args.host, "--port", str(port), "--reload"], cwd=str(ROOT))
 
 
+def memory_purge(args) -> int:
+    try:
+        count = create_long_term_memory().purge(args.before)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    result = {"purged_count": count}
+    if args.before:
+        result["before"] = args.before
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+def memory_export(args) -> int:
+    try:
+        # CLI 默认只导出脱敏内容；敏感明文导出需通过受保护的 REST 授权路径。
+        result = create_long_term_memory().export(authorize_sensitive=False, redact_sensitive=True)
+    except (RuntimeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps({"entries": result}, ensure_ascii=False))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="uh", description="UH! Ultra Harness CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -197,7 +224,16 @@ def main(argv=None) -> int:
     lg = devsub.add_parser("logs"); lg.add_argument("-f", "--follow", action="store_true")
     rs = devsub.add_parser("reset"); rs.add_argument("--keep-vectors", action="store_true")
     wa = devsub.add_parser("watch"); wa.add_argument("--port", type=int); wa.add_argument("--host", default="127.0.0.1")
+    memory = sub.add_parser("memory", help="长期记忆")
+    memorysub = memory.add_subparsers(dest="action")
+    purge = memorysub.add_parser("purge", help="清理长期记忆")
+    purge.add_argument("--before", help="清理此日期/时间之前的记忆")
+    export = memorysub.add_parser("export", help="导出长期记忆")
     args = parser.parse_args(argv)
+    if args.cmd == "memory":
+        if not getattr(args, "action", None):
+            parser.print_help(); return 0
+        return {"purge": memory_purge, "export": memory_export}[args.action](args)
     if args.cmd != "dev" or not getattr(args, "action", None):
         parser.print_help(); return 0
     return {"up": dev_up, "down": dev_down, "logs": dev_logs, "reset": dev_reset, "watch": dev_watch}[args.action](args)

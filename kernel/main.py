@@ -20,6 +20,7 @@ from . import __version__, tracing
 from .logging import get_logger, log_event, setup_logging
 from .router import classify
 from .memory import create_short_term_memory
+from .long_term_memory import create_long_term_memory
 from .llm import create_llm_client
 from .tasks import TaskManager
 from .protocol import EventBus, CapabilityRegistry, StorageGuard, Envelope
@@ -45,6 +46,7 @@ class MessageRequest(BaseModel):
 
     content: str
     mode: str = "auto"
+    context: dict = {}
 
 
 class ResumeRequest(BaseModel):
@@ -54,6 +56,7 @@ class ResumeRequest(BaseModel):
 def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
     app.state.memory = create_short_term_memory()
+    app.state.long_term_memory = create_long_term_memory()
     app.state.llm = create_llm_client()
     app.state.bus = EventBus()
     app.state.guard = StorageGuard()
@@ -111,7 +114,7 @@ def create_app() -> FastAPI:
     app.state.rpc.register("llm.generate", _llm_cap)
     app.state.rpc.register("retrieval.search", _retrieval_cap, storage={"retrieval"})
     app.state.rpc.register("orchestration.run", _orchestration_cap, storage={"orchestration"})
-    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration)
+    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory)
 
     @app.on_event("startup")
     async def register_retrieval_tools() -> None:
@@ -140,6 +143,17 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "ok", "version": __version__}
 
+    @app.get("/metrics", response_class=Response)
+    async def metrics():
+        short_term_keys = await app.state.memory.key_count()
+        body = (
+            "# TYPE uh_memory_short_term_keys gauge\n"
+            f"uh_memory_short_term_keys {short_term_keys}\n"
+            "# TYPE uh_memory_long_term_entries gauge\n"
+            f"uh_memory_long_term_entries {app.state.long_term_memory.entry_count}\n"
+        )
+        return Response(content=body, media_type="text/plain")
+
     @app.get("/ready")
     async def ready():
         checks = {}
@@ -150,6 +164,32 @@ def create_app() -> FastAPI:
             checks["memory"] = "error"
         status = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
         return {"status": status, "version": __version__, "checks": checks}
+
+    @app.get("/memory/short-term")
+    @app.get("/api/v1/memory/short-term")
+    async def get_short_term_memory(session_id: str):
+        entries = await app.state.memory.get_context(session_id)
+        return {"data": {"session_id": session_id, "entries": entries}, "meta": {}, "error": None}
+
+    @app.delete("/memory/long-term")
+    @app.delete("/api/v1/memory/long-term")
+    async def purge_long_term_memory(before: str | None = None):
+        try:
+            count = app.state.long_term_memory.purge(before)
+        except (TypeError, ValueError) as exc:
+            return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1003", "message": str(exc), "retryable": False}}), status_code=400, media_type="application/json")
+        return {"data": {"purged_count": count, "before": before}, "meta": {}, "error": None}
+
+    @app.get("/memory/export")
+    @app.get("/api/v1/memory/export")
+    async def export_long_term_memory(request: Request, include_sensitive: bool = False):
+        authorized = False
+        if include_sensitive:
+            expected = os.environ.get("UH_MEMORY_EXPORT_TOKEN")
+            authorized = bool(expected and request.headers.get("X-UH-Memory-Export-Authorization") == expected)
+            if not authorized:
+                return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1002", "message": "需要长期记忆导出授权", "retryable": False}}), status_code=403, media_type="application/json")
+        return {"data": {"entries": app.state.long_term_memory.export(authorize_sensitive=authorized)}, "meta": {}, "error": None}
 
     @app.post("/api/v1/dev/route", include_in_schema=False)
     async def dev_route(req: RouteRequest):
@@ -177,7 +217,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/sessions/{session_id}/messages", status_code=202)
     async def send_message(session_id: str, req: MessageRequest):
-        task_id, trace_id = app.state.tasks.create(session_id, req.content, req.mode)
+        task_id, trace_id = app.state.tasks.create(session_id, req.content, req.mode, req.context)
         return {"data": {"task_id": task_id, "stream_url": "/api/v1/tasks/" + task_id + "/stream", "trace_id": trace_id}, "meta": {"trace_id": trace_id}, "error": None}
 
     @app.get("/api/v1/tasks/{task_id}")
