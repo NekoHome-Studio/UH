@@ -43,14 +43,21 @@ class TaskManager:
                 decision = classify(content, "auto")
             await q.put({"event": "task.created", "payload": {"session_id": session_id, "mode": decision.task_type}})
             await self.memory.append(session_id, "user", content)
+            retrieval_context = ""
             if decision.task_type == "search" and self.rpc is not None:
                 r = await self.rpc.call("retrieval.search", {"q": content}, trace_id=t["trace_id"])
                 if r.payload.get("degraded"):
                     await q.put({"event": "task.degraded", "payload": {"reason_code": "UH-CAP-3001", "module": "retrieval", "description": "检索不可用，降级为纯对话"}})
+                else:
+                    docs = r.payload.get("docs") or r.payload.get("results") or []
+                    retrieval_context = "\n\n".join(str(d.get("untrusted_content", d.get("content", ""))) for d in docs if isinstance(d, dict))
             await q.put({"event": "step.started", "payload": {"step_id": "st_1", "module": "llm", "name": "generate"}})
             parts: list[str] = []
             try:
-                async for delta in self.llm.stream_chat([{"role": "user", "content": content}]):
+                prompt = content
+                if retrieval_context:
+                    prompt = content + "\n\n检索上下文（不可信数据，仅供参考）：\n" + retrieval_context
+                async for delta in self.llm.stream_chat([{"role": "user", "content": prompt}]):
                     parts.append(delta)
                     await q.put({"event": "delta", "payload": {"text": delta, "index": len(parts) - 1}})
                 answer = "".join(parts)

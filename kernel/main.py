@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import time
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ from .memory import create_short_term_memory
 from .llm import create_llm_client
 from .tasks import TaskManager
 from .protocol import EventBus, CapabilityRegistry, StorageGuard, Envelope
+from .mcp import MCPHost, InProcessTransport, MCPError
+from .retrieval import RetrievalMCPServer
 
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 
@@ -50,6 +53,23 @@ def create_app() -> FastAPI:
     app.state.bus = EventBus()
     app.state.guard = StorageGuard()
     app.state.rpc = CapabilityRegistry(app.state.bus, app.state.guard)
+    app.state.retrieval_server = RetrievalMCPServer()
+    if os.environ.get("UH_RETRIEVAL_MCP_COMMAND"):
+        app.state.retrieval_host = MCPHost.from_stdio(os.environ["UH_RETRIEVAL_MCP_COMMAND"], bus=app.state.bus)
+    elif os.environ.get("UH_RETRIEVAL_MCP_URL"):
+        app.state.retrieval_host = MCPHost.from_http(os.environ["UH_RETRIEVAL_MCP_URL"], bus=app.state.bus)
+    else:
+        app.state.retrieval_host = MCPHost(InProcessTransport(app.state.retrieval_server.handle), bus=app.state.bus)
+    # 开发环境保留一条最小内置文档，维持 M0 search 演示可用；用户文档仍由
+    # index_document 工具写入。其内容不承担生产知识库职责。
+    try:
+        if not app.state.retrieval_server.service.store.documents:
+            app.state.retrieval_server.service.index_document(
+                content="UH! MCP 协议与检索能力的开发演示文档。",
+                source="builtin:uh-demo.md", title="UH! MCP demo",
+            )
+    except Exception:
+        pass
 
     async def _llm_cap(req):
         msgs = req.payload.get("messages") or [{"role": "user", "content": req.payload.get("content", "")}]
@@ -57,11 +77,34 @@ def create_app() -> FastAPI:
         return Envelope(action=req.action, payload={"content": content}, trace_id=req.trace_id, from_=req.to, to=req.from_)
 
     async def _retrieval_cap(req):
-        return Envelope(action=req.action, payload={"docs": [{"title": "mock", "snippet": "检索结果（M1-3 接真实 LlamaIndex MCP Server）"}]}, trace_id=req.trace_id, from_=req.to, to=req.from_)
+        try:
+            result = await app.state.retrieval_host.call_tool(
+                "search", {"query": req.payload.get("query", req.payload.get("q", "")), "top_k": req.payload.get("top_k", 5)},
+                trace_id=req.trace_id,
+            )
+            payload = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else result
+            return Envelope(action=req.action, payload=payload, trace_id=req.trace_id, from_=req.to, to=req.from_)
+        except MCPError as exc:
+            return Envelope(
+                action=req.action,
+                payload={"degraded": True, "reason": "retrieval unavailable", "error_code": exc.code, "error": exc.to_dict()},
+                trace_id=req.trace_id, from_=req.to, to=req.from_,
+            )
 
     app.state.rpc.register("llm.generate", _llm_cap)
     app.state.rpc.register("retrieval.search", _retrieval_cap, storage={"retrieval"})
     app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc)
+
+    @app.on_event("startup")
+    async def register_retrieval_tools() -> None:
+        # MCP tools 通过 Host 注册到能力目录；主链路的兼容别名由上面的
+        # retrieval.search handler 提供，以保持 M1-1 TaskManager 契约不变。
+        try:
+            await app.state.retrieval_host.register_capabilities(app.state.rpc)
+            app.state.retrieval_ready = True
+        except Exception as exc:
+            app.state.retrieval_ready = False
+            log_event(log, logging.WARNING, "capability.module.degraded", module="retrieval", reason=str(exc))
 
     @app.middleware("http")
     async def trace_middleware(request: Request, call_next):
