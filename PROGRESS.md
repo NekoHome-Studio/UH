@@ -167,5 +167,10 @@
 - Codex 实现 {data,meta,error} 统一+trace_id 必带+错误对齐 errors.md+Idempotency-Key 回放+分页；6 测试
 - DSH 审 + 门禁 90/90；commit c372cdf；关闭 #18
 
+### 2026-11-16 · M1-9 派给 Codex（B 路径，M1-7 前置）
+- 依赖图：M1-7 依赖 M1-9，故先派 M1-9（#21 事件字典冻结+总线映射+UI 状态机）
+- briefs/0008-m1-9-event-dictionary.md 备好（内部→外部映射带 span_id+UI 10 状态机+CI 双向校验+审计反查；冻结打 contract-events-v1 由 DSH 执行）
+- 用户 GUI 发起，DSH 待审
+
 ## 下一步
-M1-7 WS 事件（#19，18 事件+after_event_id 回放+终态保证，M0 SSE 升 WS）/ M1-8 高危确认（#20）。M1 进度 6/8。可派 Codex（B 路径）或 DSH 直做。
+M1-9 事件字典（#21，Codex 实现中）→ M1-7 WS（#19）/ M1-8 高危确认（#20）。M1 进度 6/8。
