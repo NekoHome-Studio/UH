@@ -26,7 +26,7 @@ const activeCodes = [...errorsMd.split("## 2.")[1].split("## 3.")[0].matchAll(/^
 const deprecatedCodes = [...errorsMd.split("## 5.")[1].split("## 6.")[0].matchAll(/^\| (UH-[A-Z]+-\d{4}) \|/gm)].map(m => m[1]);
 const evSchema = JSON.parse(read("docs/contracts/events.schema.json"));
 const extEvents = evSchema.properties.event.enum;
-const internalEvents = ["kernel.request.received","kernel.route.decided","capability.invoked","capability.finished","capability.failed","memory.write","llm.delta","mcp.tool.call","mcp.tool.result","tool.confirm","tool.confirm.resolved","kernel.task.cancelled","kernel.task.resumed","kernel.task.degraded","kernel.task.finished","kernel.task.failed","cua.yield","route.decided","route.fallback","request.received","request.finished","llm.call","llm.error","llm.retry","llm.usage"];
+const internalEvents = ["kernel.request.received","kernel.route.decided","capability.invoked","capability.finished","capability.failed","memory.write","llm.delta","mcp.tool.call","mcp.tool.result","tool.confirm","tool.confirm.resolved","kernel.task.cancelled","kernel.task.resumed","kernel.task.degraded","kernel.task.finished","kernel.task.failed","cua.yield","route.decided","route.fallback","request.received","request.finished","llm.call","llm.error","llm.retry","llm.usage","capability.module.degraded","capability.module.failed","capability.module.invoked","capability.module.finished","memory.record.write","llm.stream.delta","cua.session.yielded","tool.confirmation.requested","tool.confirmation.resolved"];
 const eventAllow = new Set([...extEvents, ...internalEvents]);
 
 // 1) 错误码：未知码硬失败；deprecated 仅限历史/修订语境
@@ -51,7 +51,7 @@ const eventsMd = read("docs/contracts/events.md");
 const mdEvents = [...eventsMd.split("## 3.")[1].split("## 4.")[0].matchAll(/\| ((?:(?:task|step|safety|tool)\.[a-z_]+)|delta) \|/g)].map(m => m[1]);
 const threeSource = JSON.stringify([...extEvents].sort()) === JSON.stringify([...aaEvents].sort()) && JSON.stringify([...extEvents].sort()) === JSON.stringify([...mdEvents].sort());
 const badEventRefs = [];
-const nonEventTokens = new Set(["memory.short_term.read", "memory.short_term.write", "fs.sandbox.read", "fs.sandbox.write", "fs.host.read", "memory.max", "cpu.max", "pids.max", "tool.network_allow_hosts", "kernel.task", "mcp.tool"]);
+const nonEventTokens = new Set(["memory.short_term.read", "memory.short_term.write", "fs.sandbox.read", "fs.sandbox.write", "fs.host.read", "memory.max", "cpu.max", "pids.max", "tool.network_allow_hosts", "kernel.task", "mcp.tool", "capability.module", "tool.confirmation", "memory.record", "llm.stream", "cua.session"]);
 const isNonEvent = (t) => {
   if (nonEventTokens.has(t)) return true;
   if (/\.(json|md|yaml|yml|csv|mjs|cjs|ps1|txt|docx|png|sh|py|pyc|toml|lock)$/.test(t)) return true;

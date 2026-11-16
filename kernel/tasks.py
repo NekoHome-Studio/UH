@@ -20,9 +20,10 @@ def _now() -> str:
 
 
 class TaskManager:
-    def __init__(self, llm: Any, memory: Any):
+    def __init__(self, llm: Any, memory: Any, rpc: Any = None):
         self.llm = llm
         self.memory = memory
+        self.rpc = rpc
         self.tasks: dict[str, dict] = {}
 
     def create(self, session_id: str, content: str, mode: str = "auto") -> tuple[str, str]:
@@ -42,6 +43,10 @@ class TaskManager:
                 decision = classify(content, "auto")
             await q.put({"event": "task.created", "payload": {"session_id": session_id, "mode": decision.task_type}})
             await self.memory.append(session_id, "user", content)
+            if decision.task_type == "search" and self.rpc is not None:
+                r = await self.rpc.call("retrieval.search", {"q": content}, trace_id=t["trace_id"])
+                if r.payload.get("degraded"):
+                    await q.put({"event": "task.degraded", "payload": {"reason_code": "UH-CAP-3001", "module": "retrieval", "description": "检索不可用，降级为纯对话"}})
             await q.put({"event": "step.started", "payload": {"step_id": "st_1", "module": "llm", "name": "generate"}})
             parts: list[str] = []
             try:

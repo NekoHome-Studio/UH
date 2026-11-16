@@ -21,6 +21,7 @@ from .router import classify
 from .memory import create_short_term_memory
 from .llm import create_llm_client
 from .tasks import TaskManager
+from .protocol import EventBus, CapabilityRegistry, StorageGuard, Envelope
 
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 
@@ -46,7 +47,21 @@ def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
     app.state.memory = create_short_term_memory()
     app.state.llm = create_llm_client()
-    app.state.tasks = TaskManager(app.state.llm, app.state.memory)
+    app.state.bus = EventBus()
+    app.state.guard = StorageGuard()
+    app.state.rpc = CapabilityRegistry(app.state.bus, app.state.guard)
+
+    async def _llm_cap(req):
+        msgs = req.payload.get("messages") or [{"role": "user", "content": req.payload.get("content", "")}]
+        content = await app.state.llm.chat(msgs)
+        return Envelope(action=req.action, payload={"content": content}, trace_id=req.trace_id, from_=req.to, to=req.from_)
+
+    async def _retrieval_cap(req):
+        return Envelope(action=req.action, payload={"docs": [{"title": "mock", "snippet": "检索结果（M1-3 接真实 LlamaIndex MCP Server）"}]}, trace_id=req.trace_id, from_=req.to, to=req.from_)
+
+    app.state.rpc.register("llm.generate", _llm_cap)
+    app.state.rpc.register("retrieval.search", _retrieval_cap, storage={"retrieval"})
+    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc)
 
     @app.middleware("http")
     async def trace_middleware(request: Request, call_next):
@@ -110,6 +125,11 @@ def create_app() -> FastAPI:
         if st is None:
             return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1003", "message": "task not found", "retryable": False}}), status_code=404, media_type="application/json")
         return {"data": st, "meta": {}, "error": None}
+
+    @app.post("/api/v1/dev/capability/{name}/toggle")
+    async def toggle_cap(name: str, available: bool = True):
+        app.state.rpc.set_available(name, available)
+        return {"data": {"name": name, "available": app.state.rpc.is_available(name)}, "meta": {}, "error": None}
 
     @app.get("/api/v1/tasks/{task_id}/stream")
     async def task_stream(task_id: str):

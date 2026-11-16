@@ -126,6 +126,10 @@ error 对象：{ code, message, retryable, retry_after_ms?, detail? }，code 遵
 | kernel.task.failed（新增） | task.failed | 总是 |
 | safety.check_started / finished / denied（新增，§9.5/§9.6） | 同名外部事件 | 总是 |
 | cua.yield（预留，CUA 插件） | task.yielded | CUA 启用时（决议 C4） |
+| capability.module.degraded（M1-1 新增，三段） | task.degraded | 模块不可用/超时降级（ADR-001/002） |
+| capability.module.failed（M1-1 新增，三段） | step.failed | 模块 handler 异常 |
+
+> M1-1 内部事件命名（ADR-002）：内部总线统一三段「域.对象.动作」。表中两段旧名（capability.invoked/finished/failed、memory.write、llm.delta、tool.confirm、cua.yield）为 deprecated 别名；M1-1 起新代码用三段名（capability.module.*、memory.record.write、llm.stream.delta、tool.confirmation.*、cua.session.yielded），旧名兼容期保留，最早 v0.2.0 移除。外部 WS 事件契约不变。
 
 信封联动（M1-1）：内部信封增加 event_id（bus_seq，总线内单调）；外部信封 span_id 指向来源内部 span；审计经 trace_id + task_id + span_id 反查 UI 事件流（§9.8 溯源链）。
 
