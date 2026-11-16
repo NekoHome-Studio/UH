@@ -138,5 +138,9 @@
 - DSH 审 diff + 门禁 75/75；commit d2dfd66；关闭 #15；检索经 M1-2 Host 接入（ADR-001）
 - 遗留：真实 embedding 完整基准待集成；on_event 弃用提示可迁 lifespan
 
+### 2026-11-16 · M1-4 派给 Codex（B 路径）
+- briefs/0005-m1-4-langgraph-orchestration.md 备好（LangGraph 状态机适配层+回退，Checkpoint PostgreSQL/SQLite/JSON，resume 不重复执行，deadline 取消，编排关闭不影响对话）
+- 用户 GUI 发起，DSH 待审
+
 ## 下一步
-M1-4 LangGraph 编排（#16）/ M1-5 长期记忆（#17，依赖 M1-3）/ M1-6 错误码响应包裹（#18）。可派 Codex（B 路径）或 DSH 直做。
+M1-4 LangGraph 编排（#16，Codex 实现中）→ M1-5 长期记忆（#17）/ M1-6 响应包裹（#18）。
