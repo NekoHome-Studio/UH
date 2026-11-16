@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator
 
 from . import tracing
 from .llm import LLMError
+from .orchestration import OrchestrationError
 from .router import classify
 
 
@@ -20,16 +21,17 @@ def _now() -> str:
 
 
 class TaskManager:
-    def __init__(self, llm: Any, memory: Any, rpc: Any = None):
+    def __init__(self, llm: Any, memory: Any, rpc: Any = None, orchestration: Any = None):
         self.llm = llm
         self.memory = memory
         self.rpc = rpc
+        self.orchestration = orchestration
         self.tasks: dict[str, dict] = {}
 
     def create(self, session_id: str, content: str, mode: str = "auto") -> tuple[str, str]:
         task_id = "uh_task_" + secrets.token_hex(16)
         trace_id = tracing.new_trace_id()
-        self.tasks[task_id] = {"queue": asyncio.Queue(), "status": "running", "session_id": session_id, "trace_id": trace_id, "seq": 0}
+        self.tasks[task_id] = {"task_id": task_id, "queue": asyncio.Queue(), "status": "running", "session_id": session_id, "trace_id": trace_id, "seq": 0, "mode": mode}
         asyncio.create_task(self._run(task_id, session_id, content, mode))
         return task_id, trace_id
 
@@ -43,6 +45,9 @@ class TaskManager:
                 decision = classify(content, "auto")
             await q.put({"event": "task.created", "payload": {"session_id": session_id, "mode": decision.task_type}})
             await self.memory.append(session_id, "user", content)
+            if decision.task_type == "workflow" and self.rpc is not None:
+                await self._run_workflow(t, q, session_id, content)
+                return
             retrieval_context = ""
             if decision.task_type == "search" and self.rpc is not None:
                 r = await self.rpc.call("retrieval.search", {"q": content}, trace_id=t["trace_id"])
@@ -70,6 +75,58 @@ class TaskManager:
                 t["status"] = "failed"
             finally:
                 await q.put(None)
+
+    async def _run_workflow(self, task: dict, q: asyncio.Queue, session_id: str, content: str, *, resume: bool = False, checkpoint_id: str | None = None) -> None:
+        """经 CapabilityRegistry 调编排能力；事件由编排节点回调进入任务流。"""
+        task_id = task.get("task_id", "")
+
+        async def emit(event: str, payload: dict) -> None:
+            await q.put({"event": event, "payload": payload})
+
+        try:
+            result = await self.rpc.call(
+                "orchestration.run",
+                {"task_id": task_id, "content": content, "emit": emit, "resume": resume, "checkpoint_id": checkpoint_id},
+                trace_id=task["trace_id"],
+            )
+            if result.payload.get("degraded"):
+                if result.payload.get("error_code") == "UH-CAP-5021" and result.payload.get("reason") != "module unavailable":
+                    await q.put({"event": "task.failed", "payload": {"error": result.payload.get("error", {"code": "UH-CAP-5021", "message": "编排超时", "retryable": True})}})
+                    task["status"] = "failed"
+                    return
+                await q.put({"event": "task.degraded", "payload": {"reason_code": result.payload.get("error_code", "UH-CAP-5021"), "module": "orchestration", "description": "编排不可用，降级为普通对话"}})
+                async for delta in self.llm.stream_chat([{"role": "user", "content": content}]):
+                    await q.put({"event": "delta", "payload": {"text": delta, "index": 0}})
+                await q.put({"event": "task.finished", "payload": {"final_result": {"content": content}}})
+                task["status"] = "finished"
+                return
+            answer = result.payload.get("answer", "")
+            await self.memory.append(session_id, "assistant", answer)
+            await q.put({"event": "task.finished", "payload": {"final_result": {"content": answer}}})
+            task["status"] = "finished"
+        except OrchestrationError as exc:
+            await q.put({"event": "task.failed", "payload": {"error": exc.to_dict()}})
+            task["status"] = "failed"
+        except Exception as exc:
+            await q.put({"event": "task.failed", "payload": {"error": {"code": "UH-CAP-4003", "message": str(exc), "retryable": False}}})
+            task["status"] = "failed"
+        finally:
+            await q.put(None)
+
+    def resume(self, task_id: str, checkpoint_id: str | None = None) -> dict | None:
+        task = self.tasks.get(task_id)
+        if task is None:
+            return None
+        orchestration = self.orchestration
+        checkpoint = orchestration.checkpoint(task_id, checkpoint_id) if orchestration is not None else None
+        if checkpoint is None:
+            return None
+        task["queue"] = asyncio.Queue()
+        task["status"] = "running"
+        skipped_steps = len(checkpoint.completed_nodes)
+        task["queue"].put_nowait({"event": "task.resumed", "payload": {"checkpoint_id": checkpoint.checkpoint_id, "skipped_steps": skipped_steps, "resumed_from_event_id": checkpoint.last_event_id}})
+        asyncio.create_task(self._run_workflow(task, task["queue"], task["session_id"], checkpoint.state.get("content", ""), resume=True, checkpoint_id=checkpoint.checkpoint_id))
+        return {"task_id": task_id, "resumed_from_event_id": checkpoint.last_event_id, "checkpoint_id": checkpoint.checkpoint_id}
 
     async def stream(self, task_id: str) -> AsyncIterator[dict]:
         t = self.tasks.get(task_id)

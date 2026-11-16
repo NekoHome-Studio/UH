@@ -25,6 +25,7 @@ from .tasks import TaskManager
 from .protocol import EventBus, CapabilityRegistry, StorageGuard, Envelope
 from .mcp import MCPHost, InProcessTransport, MCPError
 from .retrieval import RetrievalMCPServer
+from .orchestration import OrchestrationService, OrchestrationError
 
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 
@@ -44,6 +45,10 @@ class MessageRequest(BaseModel):
 
     content: str
     mode: str = "auto"
+
+
+class ResumeRequest(BaseModel):
+    checkpoint_id: str | None = None
 
 
 def create_app() -> FastAPI:
@@ -70,6 +75,7 @@ def create_app() -> FastAPI:
             )
     except Exception:
         pass
+    app.state.orchestration = OrchestrationService(retrieval=app.state.retrieval_server.service, llm=app.state.llm)
 
     async def _llm_cap(req):
         msgs = req.payload.get("messages") or [{"role": "user", "content": req.payload.get("content", "")}]
@@ -91,9 +97,21 @@ def create_app() -> FastAPI:
                 trace_id=req.trace_id, from_=req.to, to=req.from_,
             )
 
+    async def _orchestration_cap(req):
+        try:
+            result = await app.state.orchestration.run(
+                req.payload.get("task_id", ""), req.payload.get("content", ""), trace_id=req.trace_id,
+                emit=req.payload.get("emit"), deadline_ms=req.deadline_ms,
+                resume=bool(req.payload.get("resume", False)), checkpoint_id=req.payload.get("checkpoint_id"),
+            )
+            return Envelope(action=req.action, payload=result, trace_id=req.trace_id, from_=req.to, to=req.from_)
+        except OrchestrationError as exc:
+            return Envelope(action=req.action, payload={"degraded": True, "reason": "orchestration error", "error_code": exc.code, "error": exc.to_dict()}, trace_id=req.trace_id, from_=req.to, to=req.from_)
+
     app.state.rpc.register("llm.generate", _llm_cap)
     app.state.rpc.register("retrieval.search", _retrieval_cap, storage={"retrieval"})
-    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc)
+    app.state.rpc.register("orchestration.run", _orchestration_cap, storage={"orchestration"})
+    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration)
 
     @app.on_event("startup")
     async def register_retrieval_tools() -> None:
@@ -168,6 +186,13 @@ def create_app() -> FastAPI:
         if st is None:
             return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1003", "message": "task not found", "retryable": False}}), status_code=404, media_type="application/json")
         return {"data": st, "meta": {}, "error": None}
+
+    @app.post("/api/v1/tasks/{task_id}/resume")
+    async def resume_task(task_id: str, req: ResumeRequest | None = None):
+        result = app.state.tasks.resume(task_id, req.checkpoint_id if req else None)
+        if result is None:
+            return Response(content=json.dumps({"data": None, "meta": {}, "error": {"code": "UH-USR-1003", "message": "task or checkpoint not found", "retryable": False}}), status_code=404, media_type="application/json")
+        return {"data": result, "meta": {"trace_id": app.state.tasks.tasks[task_id]["trace_id"]}, "error": None}
 
     @app.post("/api/v1/dev/capability/{name}/toggle")
     async def toggle_cap(name: str, available: bool = True):
