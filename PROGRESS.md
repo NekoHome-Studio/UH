@@ -128,5 +128,9 @@
 - DSH 逐段审 diff + 独立门禁，本地+服务器 69/69；commit 9dba4b6；关闭 #14
 - B 路径验证：用户 GUI 发起 brief → Codex 实现不提交 → DSH 审查落地
 
+### 2026-11-16 · M1-3 派给 Codex（B 路径）
+- briefs/0004-m1-3-retrieval-mcp.md 备好（检索 MCP Server：LlamaIndex+Chroma，search/index_document/query，untrusted_content 防注入，CAP-3001 降级，经 M1-2 Host 接入，确定性 embedding 离线测试 + 基准 harness）
+- ADR-001 落地：检索从内部 RPC 改 MCP Server；用户 GUI 发起，DSH 待审
+
 ## 下一步
-M1-3 检索 MCP Server（#15，ADR-001，经 M1-2 Host 接 LlamaIndex）/ M1-4 LangGraph 编排（#16）/ M1-5 长期记忆（#17）。可派 Codex（B 路径）或 DSH 直做。
+M1-3 检索 MCP Server（#15，Codex 实现中）→ M1-4 LangGraph 编排（#16）/ M1-5 长期记忆（#17）。
