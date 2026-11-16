@@ -26,6 +26,7 @@
 | M1-3 | 检索 MCP Server（LlamaIndex/Chroma） | 已完成 · Codex 实现 DSH 审 | retrieval.py + 6 测试 + bench，75/75 |
 | M1-4 | LangGraph 编排（Checkpoint+resume） | 已完成 · Codex 实现 DSH 审 | orchestration.py + 5 测试，80/80 |
 | M1-5 | 长期记忆（分级+加密+无痕） | 已完成 · Codex 实现 DSH 审 | long_term_memory.py + 4 测试，84/84 |
+| M1-6 | 错误码响应包裹（统一+幂等+分页） | 已完成 · Codex 实现 DSH 审 | main.py 包裹 + 6 测试，90/90 |
 
 ## 执行日志
 
@@ -162,5 +163,9 @@
 - briefs/0007-m1-6-response-envelope.md 备好（{data,meta,error} 统一+meta.trace_id 必带+错误对齐 errors.md+Idempotency-Key 幂等+分页 total/has_more；ops 端点保持 plain）
 - 用户 GUI 发起，DSH 待审
 
+### 2026-11-16 · M1-6 响应包裹完成（B 路径，对外契约成型）
+- Codex 实现 {data,meta,error} 统一+trace_id 必带+错误对齐 errors.md+Idempotency-Key 回放+分页；6 测试
+- DSH 审 + 门禁 90/90；commit c372cdf；关闭 #18
+
 ## 下一步
-M1-6 响应包裹（#18，Codex 实现中）→ M1-7 WS（#19）/ M1-8 高危确认（#20）。M1 进度 5/8。
+M1-7 WS 事件（#19，18 事件+after_event_id 回放+终态保证，M0 SSE 升 WS）/ M1-8 高危确认（#20）。M1 进度 6/8。可派 Codex（B 路径）或 DSH 直做。
