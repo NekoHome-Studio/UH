@@ -72,7 +72,7 @@ def _terminate(pid: int) -> None:
             pass
 
 
-def _wait_health(port: int, timeout: float = 20.0) -> bool:
+def _wait_health(port: int, timeout: float = 45.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
