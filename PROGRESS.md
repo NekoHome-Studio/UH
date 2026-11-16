@@ -148,5 +148,9 @@
 - DSH 审 run/resume 正确性 + 门禁 80/80；commit 5e6d19e；关闭 #16
 - 遗留：PostgreSQL checkpoint 待 psycopg 集成（回退 SQLite）
 
+### 2026-11-16 · M1-5 派给 Codex（B 路径）
+- briefs/0006-m1-5-long-term-memory.md 备好（语义召回+隐私分级 L3 拒入/L2 加密不入语义索引/L1 语义，无痕不写，purge/export；L2 语义泄露策略已定）
+- 用户 GUI 发起，DSH 待审（重点核 L2 不入语义索引）
+
 ## 下一步
-M1-5 长期记忆（#17，依赖 M1-3）/ M1-6 错误码响应包裹（#18）/ M1-7 WS 事件（#19）/ M1-8 高危确认（#20）。可派 Codex（B 路径）或 DSH 直做。
+M1-5 长期记忆（#17，Codex 实现中）→ M1-6 响应包裹（#18）/ M1-7 WS（#19）/ M1-8 高危确认（#20）。
