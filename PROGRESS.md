@@ -25,6 +25,7 @@
 | M1-2 | MCP Host（tools/list+call） | 已完成 · Codex 实现 DSH 审 | mcp.py + 5 测试，69/69 |
 | M1-3 | 检索 MCP Server（LlamaIndex/Chroma） | 已完成 · Codex 实现 DSH 审 | retrieval.py + 6 测试 + bench，75/75 |
 | M1-4 | LangGraph 编排（Checkpoint+resume） | 已完成 · Codex 实现 DSH 审 | orchestration.py + 5 测试，80/80 |
+| M1-5 | 长期记忆（分级+加密+无痕） | 已完成 · Codex 实现 DSH 审 | long_term_memory.py + 4 测试，84/84 |
 
 ## 执行日志
 
@@ -152,5 +153,10 @@
 - briefs/0006-m1-5-long-term-memory.md 备好（语义召回+隐私分级 L3 拒入/L2 加密不入语义索引/L1 语义，无痕不写，purge/export；L2 语义泄露策略已定）
 - 用户 GUI 发起，DSH 待审（重点核 L2 不入语义索引）
 
+### 2026-11-16 · M1-5 长期记忆完成（B 路径，RAG+记忆闭环）
+- Codex 实现 kernel/long_term_memory.py（PrivacyClassifier L3 拒入/L2 AES-GCM 加密不入语义索引/L1 语义，无痕不写，purge/export）+ 4 测试
+- DSH 重点审 L2 不语义索引（隐私策略落地）+ 门禁 84/84；commit 5f0d088；关闭 #17
+- L2 语义泄露风险裁决：加密内容不入向量索引，仅元数据过滤召回
+
 ## 下一步
-M1-5 长期记忆（#17，Codex 实现中）→ M1-6 响应包裹（#18）/ M1-7 WS（#19）/ M1-8 高危确认（#20）。
+M1-6 错误码响应包裹（#18，{data,meta,error} 统一）/ M1-7 WS 事件（#19，18 事件+回放）/ M1-8 高危确认（#20）。M1 进度 5/8。可派 Codex（B 路径）或 DSH 直做。
