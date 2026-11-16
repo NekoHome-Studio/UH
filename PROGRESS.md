@@ -118,5 +118,9 @@
 - 14 新测试，本地+服务器 64/64；tag contract-internal-v1；关闭 #13
 - 修 CLI 健康检查代理绕过（ProxyHandler({})）+ 慢盘超时 45s
 
+### 2026-11-16 · M1-2 派给 Codex（B 路径）
+- briefs/0003-m1-2-mcp-host.md 备好（MCP Host：tools/list+call+超时取消+256KB截断+幂等重试，mock 测试，集成 CapabilityRegistry）
+- 用户在 Codex GUI 的 UH! 项目发起；DSH 待审 diff + 门禁 + 落地
+
 ## 下一步
-M1 能力期：M1-2 MCP Host（#14，检索+工具共同前置）→ M1-3 检索 MCP Server（#15，ADR-001）/ M1-4 LangGraph 编排（#16）。实现可派 Codex（B 路径）或 DSH 直做。
+M1-2 MCP Host（#14，Codex 实现中）→ M1-3 检索 MCP Server（#15，ADR-001）/ M1-4 LangGraph 编排（#16）。
