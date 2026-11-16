@@ -30,6 +30,7 @@ from .retrieval import RetrievalMCPServer
 from .orchestration import OrchestrationService, OrchestrationError
 
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
+_UI_STATE_MACHINE = Path(__file__).resolve().parent.parent / "ui" / "state-machine.js"
 
 setup_logging()
 log = get_logger("kernel.http")
@@ -369,6 +370,10 @@ def create_app() -> FastAPI:
     @app.get("/")
     async def index():
         return FileResponse(_UI)
+
+    @app.get("/static/state-machine.js", include_in_schema=False)
+    async def state_machine_asset():
+        return FileResponse(_UI_STATE_MACHINE, media_type="application/javascript")
 
     @app.post("/api/v1/sessions", status_code=201)
     async def create_session():

@@ -15,6 +15,8 @@ from . import tracing
 from .llm import LLMError
 from .orchestration import OrchestrationError
 from .router import classify
+from .event_mapping import EventMapper
+from .protocol import Envelope
 
 
 def _now() -> str:
@@ -29,6 +31,7 @@ class TaskManager:
         self.orchestration = orchestration
         self.long_term_memory = long_term_memory
         self.tasks: dict[str, dict] = {}
+        self.event_mapper = EventMapper()
 
     def create(self, session_id: str, content: str, mode: str = "auto", context: dict[str, Any] | None = None) -> tuple[str, str]:
         task_id = "uh_task_" + secrets.token_hex(16)
@@ -60,7 +63,7 @@ class TaskManager:
             if decision.task_type == "search" and self.rpc is not None:
                 r = await self.rpc.call("retrieval.search", {"q": content}, trace_id=t["trace_id"])
                 if r.payload.get("degraded"):
-                    await q.put({"event": "task.degraded", "payload": {"reason_code": "UH-CAP-3001", "module": "retrieval", "description": "检索不可用，降级为纯对话"}})
+                    await q.put({"event": "task.degraded", "payload": {"reason_code": "UH-CAP-3001", "module": "llama_index", "description": "检索不可用，降级为纯对话"}})
                 else:
                     docs = r.payload.get("docs") or r.payload.get("results") or []
                     retrieval_context = "\n\n".join(str(d.get("untrusted_content", d.get("content", ""))) for d in docs if isinstance(d, dict))
@@ -79,8 +82,8 @@ class TaskManager:
                 await self.memory.append(session_id, "assistant", answer)
                 await self._long_term_write(content, session_id, context, role="user")
                 await self._long_term_write(answer, session_id, context, role="assistant")
-                await q.put({"event": "step.finished", "payload": {"step_id": "st_1", "module": "llm", "status": "done"}})
-                await q.put({"event": "task.finished", "payload": {"final_result": {"content": answer}}})
+                await q.put({"event": "step.finished", "payload": {"step_id": "st_1", "module": "llm", "status": "done", "duration_ms": 0}})
+                await q.put({"event": "task.finished", "payload": {"final_result": {"content": answer}, "duration_ms": 0}})
                 t["status"] = "finished"
             except LLMError as e:
                 await q.put({"event": "task.failed", "payload": {"error": {"code": e.code, "message": e.message, "retryable": e.retryable}}})
@@ -111,7 +114,7 @@ class TaskManager:
                 await q.put({"event": "task.degraded", "payload": {"reason_code": result.payload.get("error_code", "UH-CAP-5021"), "module": "orchestration", "description": "编排不可用，降级为普通对话"}})
                 async for delta in self.llm.stream_chat([{"role": "user", "content": content}]):
                     await q.put({"event": "delta", "payload": {"text": delta, "index": 0}})
-                await q.put({"event": "task.finished", "payload": {"final_result": {"content": content}}})
+                await q.put({"event": "task.finished", "payload": {"final_result": {"content": content}, "duration_ms": 0}})
                 task["status"] = "finished"
                 if memory_recall:
                     await self._long_term_write(content, session_id, context, role="user")
@@ -122,7 +125,7 @@ class TaskManager:
             if memory_recall:
                 await self._long_term_write(content, session_id, context, role="user")
                 await self._long_term_write(answer, session_id, context, role="assistant")
-            await q.put({"event": "task.finished", "payload": {"final_result": {"content": answer}}})
+            await q.put({"event": "task.finished", "payload": {"final_result": {"content": answer}, "duration_ms": 0}})
             task["status"] = "finished"
         except OrchestrationError as exc:
             await q.put({"event": "task.failed", "payload": {"error": exc.to_dict()}})
@@ -156,8 +159,47 @@ class TaskManager:
             item = await t["queue"].get()
             if item is None:
                 break
+            source_action = self._source_action(item["event"])
+            source = Envelope(
+                action=source_action,
+                payload=item["payload"],
+                trace_id=t["trace_id"],
+                span_id=item.get("span_id") or tracing.new_span_id(),
+                from_="kernel",
+            )
             t["seq"] += 1
-            yield {"event_id": t["seq"], "event": item["event"], "version": 1, "task_id": task_id, "trace_id": t["trace_id"], "ts": _now(), "payload": item["payload"]}
+            mapped = self.event_mapper.map(source, task_id=task_id, event_id=t["seq"], ts=_now())
+            # Audit-only internal events are never placed in the external stream.
+            if mapped is not None:
+                yield mapped
+
+    @staticmethod
+    def _source_action(event: str) -> str:
+        """Compatibility bridge for legacy task producers.
+
+        Task execution still queues its familiar external names internally; the
+        stream boundary turns them into the registered three-segment sources.
+        """
+        return {
+            "task.created": "kernel.route.decided",
+            "task.finished": "kernel.task.finished",
+            "task.failed": "kernel.task.failed",
+            "task.cancelled": "kernel.task.cancelled",
+            "task.resumed": "kernel.task.resumed",
+            "step.started": "capability.module.invoked",
+            "step.finished": "capability.module.finished",
+            "step.failed": "capability.module.failed",
+            "delta": "llm.stream.delta",
+            "tool.call": "mcp.tool.call",
+            "tool.result": "mcp.tool.result",
+            "task.confirmation_required": "tool.confirmation.requested",
+            "task.confirmation_resolved": "tool.confirmation.resolved",
+            "task.yielded": "cua.session.yielded",
+            "task.degraded": "kernel.task.degraded",
+            "safety.check_started": "safety.check.started",
+            "safety.check_finished": "safety.check.finished",
+            "safety.denied": "safety.action.denied",
+        }.get(event, event)
 
     def status(self, task_id: str) -> dict | None:
         t = self.tasks.get(task_id)

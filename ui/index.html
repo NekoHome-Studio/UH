@@ -40,11 +40,13 @@
   <input id="prompt" placeholder="输入消息，开始对话…" autofocus autocomplete="off">
   <button id="send">发送</button>
 </div></div>
+<script src="/static/state-machine.js"></script>
 <script>
 const chat = document.getElementById('chat');
 const prompt = document.getElementById('prompt');
 const send = document.getElementById('send');
 let sessionId = null, busy = false;
+let uiState = UHStateMachine.initialState();
 
 const DOMAIN = {
   USR: '请求/认证问题，请检查输入或重新登录',
@@ -62,6 +64,9 @@ function breathing(on) {
   if (on && !b) { b = document.createElement('div'); b.id='breath'; b.className='breathing';
     b.innerHTML='<span class="dot"></span>思考中…'; chat.appendChild(b); b.scrollIntoView({behavior:'smooth'}); }
   if (!on && b) b.remove();
+}
+function renderState() {
+  breathing(['routing','thinking','checking','acting','streaming','awaiting_user','yielded'].includes(uiState.state));
 }
 function showError(code, message, traceId) {
   const domain = (code||'').split('-')[1] || 'KRN';
@@ -84,11 +89,12 @@ async function submit() {
       body: JSON.stringify({content, mode:'auto'})
     })).json();
     const { task_id, stream_url, trace_id } = resp.data;
-    breathing(true);
     const target = addMsg('assistant', '');
     const es = new EventSource(stream_url);
     es.onmessage = (e) => {
       const ev = JSON.parse(e.data);
+      uiState = UHStateMachine.transition(uiState, ev);
+      renderState();
       if (ev.event === 'delta') { target.textContent += ev.payload.text; target.scrollIntoView({behavior:'smooth'}); }
       else if (ev.event === 'task.finished') { breathing(false); es.close(); busy=false; send.disabled=false; prompt.focus(); }
       else if (ev.event === 'task.failed') { breathing(false); target.remove(); showError(ev.payload.error.code, ev.payload.error.message, trace_id); es.close(); busy=false; send.disabled=false; }

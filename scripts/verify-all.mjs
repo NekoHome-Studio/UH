@@ -59,6 +59,19 @@ for (const f of evFiles) bOk = bOk && ev(JSON.parse(read("docs/contracts/events/
 for (const f of negFiles) bOk = bOk && !ev(JSON.parse(read("docs/contracts/events/examples-negative/" + f)));
 check("B events schema（18 正例 + 7 负例）", bOk, evFiles.length + "+" + negFiles.length);
 
+// B2. 运行时双向门禁：Python 映射器必须拒绝未知/非法外部事件，且内部名遵守 ADR-002。
+try {
+  const validProbe = "from kernel.event_mapping import validate_external_event; from kernel.protocol import validate_event_name; import json; validate_external_event(json.loads(open('docs/contracts/events/examples/09-delta.json',encoding='utf-8').read())); validate_event_name('capability.module.invoked')";
+  execSync("python -c " + JSON.stringify(validProbe), { cwd: ROOT, stdio: "pipe" });
+  const rejected = (probe) => { try { execSync("python -c " + JSON.stringify(probe), { cwd: ROOT, stdio: "pipe" }); return false; } catch { return true; } };
+  const unknownExternal = "from kernel.event_mapping import validate_external_event; import json; e=json.loads(open('docs/contracts/events/examples/09-delta.json',encoding='utf-8').read()); e['event']='future.event'; validate_external_event(e)";
+  const badInternal = "from kernel.protocol import validate_event_name; validate_event_name('capability.invoked')";
+  if (!rejected(unknownExternal) || !rejected(badInternal)) throw new Error("negative probe unexpectedly accepted");
+  check("B2 运行时映射双向校验 + ADR-002 三段命名", true, "push/subscribe negative probe");
+} catch (e) {
+  check("B2 运行时映射双向校验 + ADR-002 三段命名", false, String(e.stdout || e.message).slice(0, 200));
+}
+
 // C. 交叉一致性预检（8 类）
 try {
   execSync("node " + JSON.stringify(path.join(ROOT, "scripts/review-precheck.mjs")), { cwd: ROOT, env: { ...process.env, YAML_PATH: path.join(DEPS, "node_modules", "js-yaml") }, stdio: "pipe" });
