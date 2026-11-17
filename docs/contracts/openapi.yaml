@@ -305,6 +305,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         default:
@@ -350,6 +352,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         default:
@@ -773,6 +777,12 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
     NotFound:
       description: 404 资源不存在（UH-USR-1003）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: 409 状态冲突（任务已终态，不可 resume/cancel；UH-USR-1003，二审 R3 只增）
       content:
         application/json:
           schema:

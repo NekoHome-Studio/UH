@@ -180,6 +180,8 @@ class OrchestrationService:
         # PostgreSQL 是目标部署后端；没有 psycopg/数据库时安全回退本地 SQLite。
         postgres_url = os.environ.get("UH_CHECKPOINT_POSTGRES_URL")
         if postgres_url:
+            import logging
+            logging.getLogger("kernel.orchestration").warning("UH_CHECKPOINT_POSTGRES_URL 已配置但 PG 后端未实装，回退 SQLite（二审 N13）")
             path = os.environ.get("UH_CHECKPOINT_SQLITE_PATH", ".uh/checkpoints.sqlite3")
             return SQLiteCheckpointStore(path)
         if os.environ.get("UH_CHECKPOINT_BACKEND", "sqlite").lower() == "json":
@@ -265,7 +267,7 @@ class OrchestrationService:
                 checkpoint.last_event_id = event_id
                 checkpoint.status = "completed" if checkpoint.next_node is None else "running"
                 checkpoint.updated_at = _now()
-                checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
+                pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
                 await self._emit(emit, "step.finished", {"step_id": step_id, "module": "langgraph", "status": "done", "duration_ms": int((time.monotonic() - started) * 1000)})
                 return graph_state
@@ -276,7 +278,7 @@ class OrchestrationService:
                 checkpoint.last_event_id = event_id
                 checkpoint.status = "interrupted"
                 checkpoint.updated_at = _now()
-                checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
+                pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
                 await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": ORCHESTRATION_TIMEOUT, "message": f"编排节点 {node_id} 超时", "retryable": True, "detail": {"module": "orchestration", "node_id": node_id, "timeout_ms": timeout_ms}}})
                 raise OrchestrationError(ORCHESTRATION_TIMEOUT, f"编排节点 {node_id} 超时", retryable=True, detail={"module": "orchestration", "node_id": node_id, "timeout_ms": timeout_ms}) from exc
@@ -287,7 +289,7 @@ class OrchestrationService:
                 checkpoint.last_event_id = event_id
                 checkpoint.status = "interrupted"
                 checkpoint.updated_at = _now()
-                checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
+                pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
                 raise
             except Exception as exc:
@@ -297,7 +299,7 @@ class OrchestrationService:
                 checkpoint.last_event_id = event_id
                 checkpoint.status = "interrupted"
                 checkpoint.updated_at = _now()
-                checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
+                pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
                 await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": module_error_code(), "message": str(exc), "retryable": False, "detail": {"module": "orchestration", "node_id": node_id}}})
                 raise OrchestrationError(module_error_code(), f"编排节点 {node_id} 失败: {exc}", detail={"module": "orchestration", "node_id": node_id}) from exc
@@ -333,7 +335,7 @@ class OrchestrationService:
         checkpoint = self.store.load(task_id, checkpoint_id) if resume else None
         if checkpoint is None:
             checkpoint = Checkpoint(
-                checkpoint_id="uh_ckpt_" + secrets.token_hex(12), task_id=task_id,
+                checkpoint_id="uh_ckpt_" + task_id, task_id=task_id,  # 二审 N13：per-task 稳定 id
                 state={"task_id": task_id, "content": content, "trace_id": trace_id},
             )
             self.store.save(checkpoint)
@@ -365,7 +367,7 @@ class OrchestrationService:
                 checkpoint.last_event_id = event_id
                 checkpoint.status = "completed" if checkpoint.next_node is None else "running"
                 checkpoint.updated_at = _now()
-                checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
+                pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
                 await self._emit(emit, "step.finished", {"step_id": step_id, "module": "langgraph", "status": "done", "duration_ms": int((time.monotonic() - started) * 1000)})
             except asyncio.TimeoutError as exc:
@@ -375,7 +377,7 @@ class OrchestrationService:
                 checkpoint.last_event_id = event_id
                 checkpoint.status = "interrupted"
                 checkpoint.updated_at = _now()
-                checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
+                pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
                 await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": ORCHESTRATION_TIMEOUT, "message": f"编排节点 {node_id} 超时", "retryable": True, "detail": {"module": "orchestration", "node_id": node_id, "timeout_ms": timeout_ms}}})
                 raise OrchestrationError(ORCHESTRATION_TIMEOUT, f"编排节点 {node_id} 超时", retryable=True, detail={"module": "orchestration", "node_id": node_id, "timeout_ms": timeout_ms}) from exc
@@ -386,7 +388,7 @@ class OrchestrationService:
                 checkpoint.last_event_id = event_id
                 checkpoint.status = "interrupted"
                 checkpoint.updated_at = _now()
-                checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
+                pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
                 raise
             except Exception as exc:
@@ -396,7 +398,7 @@ class OrchestrationService:
                 checkpoint.last_event_id = event_id
                 checkpoint.status = "interrupted"
                 checkpoint.updated_at = _now()
-                checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
+                pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
                 await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": module_error_code(), "message": str(exc), "retryable": False, "detail": {"module": "orchestration", "node_id": node_id}}})
                 raise OrchestrationError(module_error_code(), f"编排节点 {node_id} 失败: {exc}", detail={"module": "orchestration", "node_id": node_id}) from exc
