@@ -208,5 +208,25 @@
 
 测试 111/111（本地+服务器），verify-all 6 项全绿；冻结 tag contract-v0.1.0 / contract-internal-v1 / contract-events-v1。
 
+### 2026-11-17 · M1 审查修复第一批（三模型审查回应）
+- 读完 GPT-6/DeepSeek-V4-Flash/Hunyuan 三份审查 + 写模型能力对比；接受「M1 封板声称过度」结论
+- 修复高置信共同发现 6 项 + 安全洞（WS 空 token 绕过/路径穿越/dev 令牌泄漏）+ 关键 P0（resume 终态唯一/RPC deadline 分层）+ CLI 编码 + done 遮蔽 bug
+- 8 回归测试，本地+服务器 119/119，verify-all 全绿；commit ffff141；回应 docs/reviews/2026-11-17-审查修复回应.md
+- 待修第二批：bus→task 桥/CAP-4003 语义/StorageGuard 接线/REST 全局鉴权/治理回写/CI 增 pytest
+
+### 2026-11-17 · M1 审查修复第二批（commit 2b1a6c1，CI #16 双绿）
+- bus→task 事件桥（tool.call/result 真实发射，task_id 路由）+ StorageGuard.authorize 接线 + step.failed 配对
+- 治理回写：6 契约 needs-review→frozen，AGENTS/README 对齐 M1；CI 增 test job（pytest+verify-all）触发含 kernel/tests
+- 120/120 本地+服务器，CI validate+test 双绿
+
+### 2026-11-17 · REST bearerAuth 落地（用户裁决：token 鉴权 + 本地单用户豁免，commit 9bd9ef6）
+- trace 中间件 bearerAuth：UH_LOCAL_MODE 默认豁免，生产 UH_AUTH_REQUIRED+UH_AUTH_TOKEN 启用，ops 豁免，未配 token 拒所有，?token= 回退；6 鉴权回归
+- 126/126 本地+服务器；M1 生产验收功能阻塞项清
+
+### 2026-11-17 · ADR-003 双模式可配置（用户裁决「两个都做，用户/插件自由切换」，commit 27e392a）
+- 错误码双模 UH_CAP_ERROR_MODE strict/legacy：只增 UH-CAP-4004（能力模块错误），CAP-4003 原义（LLM 上游）不变；mcp/orchestration/protocol/tasks 模块错误经 module_error_code() 助手
+- 记忆 scope UH_MEMORY_SCOPE global/session + context.memory_scope 覆盖；写入恒标 session_id，scope 仅控召回过滤
+- 修订对照 revisions/ADR-003-错误码只增对照.md；3 双模式回归；129/129 本地+服务器
+
 ## 下一步
-M2 插件期：M2-1 插件 SDK/manifest（#22 起，基于 contract-internal-v1 稳定协议）→ 沙箱/钩子/插件加载。可派 Codex（B 路径）或 DSH 直做。
+契约裁决项全清（ADR-001/002/003）。剩 P2 演进（checkpoint_id 稳定性/LangGraph 答案/内存 TTL/shutdown）不阻塞。M1 生产链路二次验收可做；M2 插件期按用户指示暂缓。

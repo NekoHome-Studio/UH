@@ -3,6 +3,8 @@
 
 # 运行时状态（CLI pid/log、检索库等）
 .uh/
+.workbuddy/
+nul
 
 # Python
 __pycache__/
