@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import itertools
 import json
+import logging
 import os
 import shlex
 import time
@@ -132,6 +133,7 @@ class StdioTransport:
         self.cwd = cwd
         self.process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._write_lock = asyncio.Lock()
 
@@ -151,6 +153,23 @@ class StdioTransport:
             cwd=self.cwd,
         )
         self._reader_task = asyncio.create_task(self._read_loop())
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+    async def _drain_stderr(self) -> None:
+        # 二审 N13：消费 stderr 防缓冲区满导致子进程阻塞死锁。
+        if self.process is None or self.process.stderr is None:
+            return
+        log = logging.getLogger("kernel.mcp")
+        try:
+            while True:
+                line = await self.process.stderr.readline()
+                if not line:
+                    break
+                log.debug("mcp.stdio.stderr: %s", line.decode("utf-8", "replace").rstrip())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
     async def _send(self, message: dict[str, Any]) -> None:
         if self.process is None or self.process.stdin is None:
@@ -214,6 +233,11 @@ class StdioTransport:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reader_task
             self._reader_task = None
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._stderr_task
+            self._stderr_task = None
         if self.process:
             if self.process.stdin:
                 self.process.stdin.close()
