@@ -402,7 +402,7 @@ class MCPHost:
     @staticmethod
     def _redact(value: Any) -> Any:
         if isinstance(value, dict):
-            return {k: ("<redacted>" if any(s in k.lower() for s in ("token", "secret", "password", "api_key", "authorization")) else MCPHost._redact(v)) for k, v in value.items()}
+            return {k: ("<redacted>" if any(s in k.lower() for s in ("token", "secret", "password", "passwd", "pwd", "api_key", "apikey", "authorization", "credential", "private_key", "access_key", "cookie", "bearer")) else MCPHost._redact(v)) for k, v in value.items()}
         if isinstance(value, list):
             return [MCPHost._redact(v) for v in value]
         return value

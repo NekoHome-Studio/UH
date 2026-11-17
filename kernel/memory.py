@@ -35,7 +35,10 @@ class ShortTermMemory:
         await self.redis.expire(key, self.ttl_s)
 
     async def get_context(self, session_id: str, limit: int | None = None) -> list[dict]:
-        n = limit or self.window
+        # 二审 N13：limit=0 显式返回空（而非 lrange(0,-1) 取全部）；None 用窗口默认。
+        if limit is not None and limit <= 0:
+            return []
+        n = self.window if limit is None else limit
         items = await self.redis.lrange(self._key(session_id), -n, -1)
         return [json.loads(x) for x in items]
 

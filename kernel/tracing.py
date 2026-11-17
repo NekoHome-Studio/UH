@@ -42,8 +42,11 @@ def clear() -> None:
 @contextmanager
 def request_context(trace_id: str | None = None) -> Iterator[str]:
     tid = trace_id or new_trace_id()
-    bind(tid)
+    # 二审 N13：用 token reset 而非 clear，嵌套上下文退出时恢复外层 trace（不清空）。
+    t_token = _TRACE_ID.set(tid)
+    s_token = _SPAN_ID.set(new_span_id())
     try:
         yield tid
     finally:
-        clear()
+        _TRACE_ID.reset(t_token)
+        _SPAN_ID.reset(s_token)

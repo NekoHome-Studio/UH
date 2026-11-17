@@ -274,7 +274,11 @@ class LongTermMemory:
         if include_sensitive and (metadata is not None or session_id is not None):
             for entry in self.entries:
                 if entry.privacy_level == PrivacyLevel.L2 and allowed(entry):
-                    rows.append({"entry_id": entry.entry_id, "content": self.decrypt(entry), "privacy_level": entry.privacy_level, "score": 0.0, "session_id": entry.session_id, "metadata": entry.metadata, "created_at": entry.created_at})
+                    try:
+                        content = self.decrypt(entry)
+                    except MemoryKeyError:
+                        content = "[解密失败：记录隔离]"  # 二审 N13：单条坏 L2 不崩溃整体召回
+                    rows.append({"entry_id": entry.entry_id, "content": content, "privacy_level": entry.privacy_level, "score": 0.0, "session_id": entry.session_id, "metadata": entry.metadata, "created_at": entry.created_at})
         return rows[: max(1, top_k)]
 
     search = recall
@@ -310,7 +314,10 @@ class LongTermMemory:
             item = {"entry_id": entry.entry_id, "session_id": entry.session_id, "privacy_level": entry.privacy_level, "created_at": entry.created_at, "metadata": entry.metadata}
             if entry.privacy_level == PrivacyLevel.L2:
                 if authorize_sensitive:
-                    item["content"] = self.decrypt(entry)
+                    try:
+                        item["content"] = self.decrypt(entry)
+                    except MemoryKeyError:
+                        item["content"] = "[解密失败：记录隔离]"  # 二审 N13：坏 L2 不崩溃整体导出
                 elif redact_sensitive:
                     item["content"] = "[REDACTED]"
             else:
