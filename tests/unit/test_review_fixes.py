@@ -188,3 +188,58 @@ def test_index_path_whitelist(tmp_path, monkeypatch):
     outside = tmp_path.parent / "secret.md"
     with pytest.raises(ValueError):
         _read_document(outside)
+
+
+# --- REST bearerAuth（审查 B5，本地单用户豁免） ---
+def _auth_env(monkeypatch, *, local="0", required="1", token="secret"):
+    monkeypatch.setenv("UH_LOCAL_MODE", local)
+    monkeypatch.setenv("UH_AUTH_REQUIRED", required)
+    if token is None:
+        for k in ("UH_AUTH_TOKEN", "UH_WS_AUTH_TOKEN", "UH_WS_TOKEN"):
+            monkeypatch.delenv(k, raising=False)
+    else:
+        monkeypatch.setenv("UH_AUTH_TOKEN", token)
+
+
+def test_rest_auth_rejects_missing_token(monkeypatch):
+    _auth_env(monkeypatch)
+    with TestClient(create_app()) as c:
+        r = c.post("/api/v1/sessions")
+        assert r.status_code == 401 and r.json()["error"]["code"] == "UH-USR-1001"
+
+
+def test_rest_auth_valid_token_passes(monkeypatch):
+    _auth_env(monkeypatch)
+    with TestClient(create_app()) as c:
+        # 经 ?token= 查询参数（与 WS 一致）；TestClient 传输层会掩码 Authorization 头
+        r = c.post("/api/v1/sessions?token=secret")
+        assert r.status_code == 201
+
+
+def test_rest_auth_wrong_token_rejected(monkeypatch):
+    _auth_env(monkeypatch)
+    with TestClient(create_app()) as c:
+        r = c.post("/api/v1/sessions", headers={"Authorization": "***"})
+        assert r.status_code == 401
+
+
+def test_rest_auth_no_expected_token_rejects_all(monkeypatch):
+    _auth_env(monkeypatch, token=None)
+    with TestClient(create_app()) as c:
+        r = c.post("/api/v1/sessions", headers={"Authorization": "***"})
+        assert r.status_code == 401  # 未配期望 token 不得放行任意 token
+
+
+def test_rest_local_mode_exempt(monkeypatch):
+    monkeypatch.setenv("UH_LOCAL_MODE", "1")
+    monkeypatch.setenv("UH_AUTH_REQUIRED", "1")
+    monkeypatch.setenv("UH_AUTH_TOKEN", "secret")
+    with TestClient(create_app()) as c:
+        assert c.post("/api/v1/sessions").status_code == 201  # 本地单用户豁免
+
+
+def test_rest_ops_exempt_when_auth_required(monkeypatch):
+    _auth_env(monkeypatch)
+    with TestClient(create_app()) as c:
+        assert c.get("/health").status_code == 200  # ops 豁免
+        assert c.get("/ready").status_code == 200

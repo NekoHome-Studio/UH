@@ -230,6 +230,18 @@ def create_app() -> FastAPI:
         with tracing.request_context(trace_id):
             log_event(log, logging.INFO, "request.received", method=request.method, path=request.url.path)
             start = time.perf_counter()
+            # REST bearerAuth（审查 B5，对齐 openapi bearerAuth）：本地单用户模式（UH_LOCAL_MODE 默认 1）豁免；
+            # 生产设 UH_LOCAL_MODE=0 + UH_AUTH_REQUIRED=1 + UH_AUTH_TOKEN 启用。ops 端点不在 /api/v1 下，天然豁免。
+            auth_required = _truthy(os.environ.get("UH_AUTH_REQUIRED") or os.environ.get("UH_WS_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE", "1"))
+            if auth_required and request.url.path.startswith("/api/v1/"):
+                expected = os.environ.get("UH_AUTH_TOKEN") or os.environ.get("UH_WS_AUTH_TOKEN") or os.environ.get("UH_WS_TOKEN")
+                # 与 WS 一致：Bearer 头优先，亦接受 ?token= 查询参数（本地/测试便利）。
+                supplied = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
+                if not supplied or expected is None or not secrets.compare_digest(supplied, expected):
+                    return Response(
+                        content=json.dumps(_envelope(error=_error_payload("UH-USR-1001", "未认证")), ensure_ascii=False),
+                        status_code=401, media_type="application/json", headers={"X-Trace-Id": trace_id},
+                    )
             idempotency_key = request.headers.get("Idempotency-Key") if request.method == "POST" else None
             cache_key = None
             if idempotency_key:
