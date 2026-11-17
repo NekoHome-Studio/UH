@@ -76,11 +76,12 @@ class EventBus:
         return self._seq
 
 
-def module_error_code() -> str:
+def module_error_code(mode: str | None = None) -> str:
     """ADR-003：能力模块错误码双模式。strict（默认）→ UH-CAP-4004（语义正确）；
-    legacy → UH-CAP-4003（向后兼容旧插件）。LLM 上游错误恒为 CAP-4003，不走此助手。"""
+    legacy → UH-CAP-4003（向后兼容旧插件）。LLM 上游错误恒为 CAP-4003，不走此助手。
+    mode 可由调用方/插件上下文覆盖（二审 R11：context.error_mode 通道）。"""
     import os
-    mode = os.environ.get("UH_CAP_ERROR_MODE", "strict").lower()
+    mode = (mode or os.environ.get("UH_CAP_ERROR_MODE", "strict")).lower()
     return "UH-CAP-4003" if mode == "legacy" else "UH-CAP-4004"
 
 
@@ -91,14 +92,23 @@ class StorageGuard:
         self._owned: dict[str, set[str]] = {}
 
     def declare(self, module: str, namespaces: set[str]) -> None:
+        # 二审 N7 真实隔离：命名空间不可被多模块重复声明（防越权共享存储）。
+        for ns in namespaces:
+            for other, owned in self._owned.items():
+                if other != module and ns in owned:
+                    raise PermissionError("命名空间 %s 已被模块 %s 声明，%s 不可重复声明（UH-KRN-2010）" % (ns, other, module))
         self._owned[module] = set(namespaces)
 
     def check(self, module: str, namespace: str) -> None:
         if namespace not in self._owned.get(module, set()):
             raise PermissionError("模块 %s 无权访问存储 %s（UH-KRN-2010）" % (module, namespace))
 
+    def access(self, module: str, namespace: str) -> None:
+        """运行时存储访问校验（二审 N7）：存储层访问前调用，校验真实目标命名空间归属。"""
+        self.check(module, namespace)
+
     def authorize(self, module: str) -> None:
-        """RPC 调度前的生产校验点（审查 P1-8）：模块仅可访问自身声明的命名空间。"""
+        """RPC 调度前校验：模块声明的命名空间归属一致（无冲突）。"""
         for ns in self._owned.get(module, set()):
             self.check(module, ns)
 
@@ -147,4 +157,4 @@ class CapabilityRegistry:
             return self._degraded(req, "deadline exceeded")
         except Exception as e:
             await self.bus.publish("capability.module.failed", {"action": action, "error": str(e)}, trace_id=trace_id)
-            return self._degraded(req, "module error: " + str(e), code=module_error_code())
+            return self._degraded(req, "module error: " + str(e), code=module_error_code(req.payload.get("error_mode")))

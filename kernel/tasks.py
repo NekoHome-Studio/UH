@@ -219,6 +219,12 @@ class TaskManager:
         if fut is not None and not fut.done():
             fut.set_result("rejected")
         task["status"] = "cancelling"  # 非 running 避免 _emit 裁剪缓冲；_emit 置终态
+        # 二审 R7：取消时为未闭合的 step 补 step.failed(status=cancelled)，满足 §5.3 配对
+        started = {e["event"]["payload"].get("step_id"): e["event"]["payload"] for e in task["event_buffer"] if e["event"]["event"] == "step.started"}
+        closed = {e["event"]["payload"].get("step_id") for e in task["event_buffer"] if e["event"]["event"] in {"step.finished", "step.failed"}}
+        for sid, payload in started.items():
+            if sid and sid not in closed:
+                await self._emit(task, "step.failed", {"step_id": sid, "module": payload.get("module", "llm"), "error": {"code": "UH-KRN-5001", "message": "任务取消，步骤未闭合", "retryable": False}})
         await self._emit(task, "task.cancelled", {"reason": reason, "completed_steps": completed})
         return {"task_id": task_id, "reason": reason, "completed_steps": completed}
 

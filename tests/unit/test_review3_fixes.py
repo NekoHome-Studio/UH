@@ -152,3 +152,30 @@ def test_l3_override_cannot_bypass(tmp_path):
     ltm = LongTermMemory(path=tmp_path / "m.json", vector_store=LocalVectorStore(tmp_path / "v.json"))
     assert ltm.write("身份证号 11010519491231002X", privacy_level="L1") is None
     assert ltm.entry_count == 0  # L3 强制拒入，override 无效
+
+
+# --- 二审 N7：StorageGuard 真实隔离 ---
+def test_storage_guard_cross_module_denied():
+    from kernel.protocol import StorageGuard
+    g = StorageGuard()
+    g.declare("mod_a", {"ns_a"})
+    g.access("mod_a", "ns_a")  # 自身命名空间放行
+    with pytest.raises(PermissionError):
+        g.access("mod_a", "ns_b")  # 越权他模块命名空间
+    with pytest.raises(PermissionError):
+        g.access("mod_b", "ns_a")
+
+
+def test_storage_guard_namespace_collision():
+    from kernel.protocol import StorageGuard
+    g = StorageGuard()
+    g.declare("mod_a", {"shared"})
+    with pytest.raises(PermissionError):
+        g.declare("mod_b", {"shared"})  # 命名空间不可重复声明
+
+
+# --- 二审 R11：ADR-003 错误码模式上下文覆盖 ---
+def test_error_mode_context_override():
+    from kernel.protocol import module_error_code
+    assert module_error_code("legacy") == "UH-CAP-4003"
+    assert module_error_code("strict") == "UH-CAP-4004"

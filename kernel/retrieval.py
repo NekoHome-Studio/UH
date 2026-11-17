@@ -91,11 +91,18 @@ class Document:
 class LocalVectorStore:
     """小型本地向量库；可持久化 JSON，接口与 Chroma 适配器一致。"""
 
-    def __init__(self, path: str | Path | None = None, embedding: DeterministicEmbedding | None = None) -> None:
+    def __init__(self, path: str | Path | None = None, embedding: DeterministicEmbedding | None = None, guard: Any = None, module: str = "retrieval.search", namespace: str = "retrieval") -> None:
         self.path = Path(path or os.environ.get("UH_RETRIEVAL_STORE", ".uh/retrieval.json"))
         self.embedding = embedding or DeterministicEmbedding()
+        self._guard = guard
+        self._module = module
+        self._namespace = namespace
         self.documents: list[Document] = []
         self._load()
+
+    def _guard_access(self) -> None:
+        if self._guard is not None:
+            self._guard.access(self._module, self._namespace)
 
     def _load(self) -> None:
         try:
@@ -113,6 +120,7 @@ class LocalVectorStore:
             pass
 
     def add(self, document: Document) -> Document:
+        self._guard_access()
         document.vector = self.embedding.embed(document.text)
         self.documents = [d for d in self.documents if d.document_id != document.document_id]
         self.documents.append(document)
@@ -120,6 +128,7 @@ class LocalVectorStore:
         return document
 
     def query(self, query: str, top_k: int = 5) -> list[tuple[Document, float]]:
+        self._guard_access()
         q = self.embedding.embed(query)
         scored = [(_cosine(q, d.vector or self.embedding.embed(d.text)), d) for d in self.documents]
         scored.sort(key=lambda item: item[0], reverse=True)
@@ -208,7 +217,7 @@ def _read_document(path: str | Path) -> tuple[str, str, str]:
 class RetrievalService:
     """检索能力实现；不暴露 LlamaIndex/Chroma 对内核的对象。"""
 
-    def __init__(self, store: LocalVectorStore | None = None) -> None:
+    def __init__(self, store: LocalVectorStore | None = None, guard: Any = None) -> None:
         backend = os.environ.get("UH_RETRIEVAL_BACKEND", "local").lower()
         if store is not None:
             self.store = store
@@ -217,7 +226,7 @@ class RetrievalService:
         elif backend == "llamaindex":
             self.store = LlamaIndexChromaStore()
         else:
-            self.store = LocalVectorStore()
+            self.store = LocalVectorStore(guard=guard)
 
     def index_document(self, *, path: str | None = None, content: str | None = None, source: str = "", title: str = "") -> dict[str, Any]:
         if path:
@@ -260,8 +269,8 @@ TOOL_SPECS = [
 class RetrievalMCPServer:
     """与 :class:`kernel.mcp.MCPHost` 兼容的最小 JSON-RPC MCP Server。"""
 
-    def __init__(self, service: RetrievalService | None = None) -> None:
-        self.service = service or RetrievalService()
+    def __init__(self, service: RetrievalService | None = None, guard: Any = None) -> None:
+        self.service = service or RetrievalService(guard=guard)
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any] | None:
         method = request.get("method")

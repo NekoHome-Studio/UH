@@ -135,8 +135,9 @@ def create_app() -> FastAPI:
     app.state.llm = create_llm_client()
     app.state.bus = EventBus()
     app.state.guard = StorageGuard()
+    app.state.guard.declare("retrieval.search", {"retrieval"})  # 提前声明，供检索存储运行时归属校验
     app.state.rpc = CapabilityRegistry(app.state.bus, app.state.guard)
-    app.state.retrieval_server = RetrievalMCPServer()
+    app.state.retrieval_server = RetrievalMCPServer(guard=app.state.guard)
     if os.environ.get("UH_RETRIEVAL_MCP_COMMAND"):
         app.state.retrieval_host = MCPHost.from_stdio(os.environ["UH_RETRIEVAL_MCP_COMMAND"], bus=app.state.bus)
     elif os.environ.get("UH_RETRIEVAL_MCP_URL"):
