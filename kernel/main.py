@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import FastAPI, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -88,6 +89,17 @@ def _error_for_status(status_code: int, message: str = "请求失败", detail: d
     }
     code, retryable = mapping.get(status_code, ("UH-KRN-5001", False))
     return _error_payload(code, message, retryable=retryable, detail=detail)
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bearer_token(value: str | None) -> str | None:
+    if not value:
+        return None
+    scheme, _, token = value.partition(" ")
+    return token.strip() if scheme.lower() == "bearer" and token.strip() else value.strip() or None
 
 
 def create_app() -> FastAPI:
@@ -376,14 +388,27 @@ def create_app() -> FastAPI:
         return FileResponse(_UI_STATE_MACHINE, media_type="application/javascript")
 
     @app.post("/api/v1/sessions", status_code=201)
-    async def create_session():
+    async def create_session(response: Response):
         sid = "uh_ses_" + secrets.token_hex(16)
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        response.set_cookie("uh_client_id", sid, httponly=True, samesite="lax")
         return _envelope({"session_id": sid, "status": "active", "created_at": now})
 
     @app.post("/api/v1/sessions/{session_id}/messages", status_code=202)
-    async def send_message(session_id: str, req: MessageRequest):
-        task_id, trace_id = app.state.tasks.create(session_id, req.content, req.mode, req.context)
+    async def send_message(session_id: str, req: MessageRequest, request: Request, response: Response):
+        client_id = request.headers.get("X-UH-Client-ID") or request.cookies.get("uh_client_id") or session_id
+        owner_token = _bearer_token(request.headers.get("Authorization"))
+        task_id, trace_id = app.state.tasks.create(
+            session_id,
+            req.content,
+            req.mode,
+            req.context,
+            owner_client_id=client_id,
+            owner_token=owner_token,
+        )
+        # Keep the local client identity available to the subsequent browser
+        # WebSocket handshake when the session was supplied directly.
+        response.set_cookie("uh_client_id", client_id, httponly=True, samesite="lax")
         return _envelope({"task_id": task_id, "stream_url": "/api/v1/tasks/" + task_id + "/stream", "trace_id": trace_id})
 
     @app.get("/api/v1/tasks/{task_id}")
@@ -414,6 +439,152 @@ def create_app() -> FastAPI:
             except KeyError:
                 yield "data: " + json.dumps({"event": "error", "payload": {"error": {"code": "UH-USR-1003", "message": "task not found"}}}) + "\n\n"
         return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.websocket("/api/v1/stream")
+    async def websocket_stream(websocket: WebSocket):
+        """Unified task event channel with replay and terminal delivery."""
+        await websocket.accept()
+        params = websocket.query_params
+        query_task_id = params.get("task_id")
+        if not query_task_id:
+            await websocket.send_json({"op": "error", "error": _error_payload("UH-USR-1003", "task_id required")})
+            await websocket.close(code=4404)
+            return
+
+        after_raw = params.get("after_event_id", params.get("last_event_id", "0"))
+        try:
+            query_after = int(after_raw or 0)
+            if query_after < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            await websocket.send_json({"op": "error", "error": _error_payload("UH-USR-1003", "invalid after_event_id")})
+            await websocket.close(code=4404)
+            return
+
+        expected_token = os.environ.get("UH_WS_AUTH_TOKEN") or os.environ.get("UH_WS_TOKEN") or os.environ.get("UH_AUTH_TOKEN")
+        auth_required = _truthy(os.environ.get("UH_WS_AUTH_REQUIRED") or os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
+        token = _bearer_token(params.get("token")) or _bearer_token(websocket.headers.get("Authorization"))
+        authenticated = not auth_required
+        if token and (expected_token is None or secrets.compare_digest(token, expected_token)):
+            authenticated = True
+        elif token and auth_required:
+            await websocket.send_json({"op": "error", "error": _error_payload("UH-USR-1001", "未认证")})
+            await websocket.close(code=4401)
+            return
+
+        client_id = params.get("client_id") or websocket.headers.get("X-UH-Client-ID") or websocket.cookies.get("uh_client_id")
+        subscriber = None
+        active_task_id = None
+
+        async def close_error(code: str, message: str, close_code: int, *, task_id: str | None = None) -> None:
+            detail = {"resource": "task", "task_id": task_id} if code == "UH-USR-1002" and task_id else None
+            await websocket.send_json({"op": "error", "error": _error_payload(code, message, detail=detail)})
+            await websocket.close(code=close_code)
+
+        async def attach(task_id: str, after_event_id: int):
+            nonlocal subscriber, active_task_id
+            if app.state.tasks.status(task_id) is None:
+                await close_error("UH-USR-1003", "task not found", 4404, task_id=task_id)
+                return None, True
+            if not app.state.tasks.owner_matches(task_id, client_id=client_id, token=token):
+                await close_error("UH-USR-1002", "无权订阅任务", 4403, task_id=task_id)
+                return None, True
+            if subscriber is not None and active_task_id:
+                app.state.tasks.unsubscribe(active_task_id, subscriber)
+            result = app.state.tasks.subscribe(task_id, after_event_id=after_event_id)
+            if result is None:
+                await close_error("UH-USR-1003", "task not found", 4404, task_id=task_id)
+                return None, True
+            new_subscriber, replay, terminal = result
+            if not app.state.tasks.replay_available(task_id, after_event_id=after_event_id):
+                app.state.tasks.unsubscribe(task_id, new_subscriber)
+                await websocket.send_json({"op": "replay_unavailable", "reason": "window_expired"})
+                await websocket.close(code=4408)
+                return None, True
+            subscriber = new_subscriber
+            active_task_id = task_id
+            for event in replay:
+                await websocket.send_json(event)
+            if terminal:
+                app.state.tasks.unsubscribe(task_id, subscriber)
+                await websocket.close(code=1000)
+                return None, True
+            return subscriber, False
+
+        if authenticated:
+            subscriber, done = await attach(query_task_id, query_after)
+            if done:
+                return
+
+        receive_task = asyncio.create_task(websocket.receive_json())
+        queue_task = asyncio.create_task(subscriber.get()) if subscriber is not None else None
+        try:
+            while True:
+                pending = {receive_task}
+                if queue_task is not None:
+                    pending.add(queue_task)
+                done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                if receive_task in done:
+                    try:
+                        message = receive_task.result()
+                    except WebSocketDisconnect:
+                        break
+                    if not isinstance(message, dict):
+                        receive_task = asyncio.create_task(websocket.receive_json())
+                        continue
+                    op = message.get("op")
+                    if op == "ping":
+                        await websocket.send_json({"op": "pong", "ts": message.get("ts", int(time.time()))})
+                    elif op == "auth":
+                        supplied = _bearer_token(message.get("token"))
+                        if not supplied or (expected_token is not None and not secrets.compare_digest(supplied, expected_token)):
+                            await close_error("UH-USR-1001", "未认证", 4401)
+                            return
+                        token = supplied
+                        authenticated = True
+                        if subscriber is None:
+                            subscriber, done = await attach(query_task_id, query_after)
+                            if done:
+                                return
+                    elif op == "subscribe":
+                        if auth_required and not authenticated:
+                            await close_error("UH-USR-1001", "未认证", 4401)
+                            return
+                        target = message.get("task_id") or query_task_id
+                        try:
+                            cursor = int(message.get("after_event_id", message.get("last_event_id", 0)))
+                            if cursor < 0:
+                                raise ValueError
+                        except (TypeError, ValueError):
+                            await close_error("UH-USR-1003", "invalid after_event_id", 4404, task_id=target)
+                            return
+                        # Query-based subscriptions are attached immediately
+                        # in local mode.  Treat the matching explicit frame as
+                        # an acknowledgement so the replay is not duplicated.
+                        if not (subscriber is not None and target == active_task_id and cursor == query_after):
+                            if queue_task is not None:
+                                queue_task.cancel()
+                                queue_task = None
+                            subscriber, done = await attach(target, cursor)
+                            if done:
+                                return
+                    receive_task = asyncio.create_task(websocket.receive_json())
+                if queue_task is not None and queue_task in done:
+                    event = queue_task.result()
+                    if event.get("event") in TaskManager.TERMINAL_EVENTS:
+                        await websocket.send_json(event)
+                        app.state.tasks.unsubscribe(active_task_id, subscriber)
+                        await websocket.close(code=1000)
+                        return
+                    await websocket.send_json(event)
+                    queue_task = asyncio.create_task(subscriber.get())
+        finally:
+            if not receive_task.done():
+                receive_task.cancel()
+            if queue_task is not None:
+                queue_task.cancel()
+            if subscriber is not None and active_task_id:
+                app.state.tasks.unsubscribe(active_task_id, subscriber)
 
     return app
 

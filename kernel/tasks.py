@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import secrets
+import time
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -24,6 +25,9 @@ def _now() -> str:
 
 
 class TaskManager:
+    REPLAY_WINDOW_SECONDS = 5 * 60
+    TERMINAL_EVENTS = frozenset({"task.finished", "task.failed", "task.cancelled"})
+
     def __init__(self, llm: Any, memory: Any, rpc: Any = None, orchestration: Any = None, long_term_memory: Any = None):
         self.llm = llm
         self.memory = memory
@@ -33,12 +37,77 @@ class TaskManager:
         self.tasks: dict[str, dict] = {}
         self.event_mapper = EventMapper()
 
-    def create(self, session_id: str, content: str, mode: str = "auto", context: dict[str, Any] | None = None) -> tuple[str, str]:
+    @staticmethod
+    def _entry_recorded_at(entry: dict[str, Any]) -> float:
+        recorded_at = float(entry.get("recorded_at", time.time()))
+        try:
+            event_ts = str(entry["event"]["ts"]).replace("Z", "+00:00")
+            event_time = datetime.fromisoformat(event_ts).timestamp()
+        except (KeyError, TypeError, ValueError, OSError):
+            return recorded_at
+        return min(recorded_at, event_time)
+
+    def create(
+        self,
+        session_id: str,
+        content: str,
+        mode: str = "auto",
+        context: dict[str, Any] | None = None,
+        *,
+        owner_client_id: str | None = None,
+        owner_token: str | None = None,
+    ) -> tuple[str, str]:
         task_id = "uh_task_" + secrets.token_hex(16)
         trace_id = tracing.new_trace_id()
-        self.tasks[task_id] = {"task_id": task_id, "queue": asyncio.Queue(), "status": "running", "session_id": session_id, "trace_id": trace_id, "seq": 0, "mode": mode, "context": dict(context or {})}
+        event_buffer: list[dict[str, Any]] = []
+        self.tasks[task_id] = {
+            "task_id": task_id,
+            "queue": asyncio.Queue(),
+            "subscribers": set(),
+            "event_buffer": event_buffer,
+            # ``events`` is kept as a readable alias for diagnostics and test
+            # fixtures that inspect the per-task replay buffer.
+            "events": event_buffer,
+            "status": "running",
+            "session_id": session_id,
+            "trace_id": trace_id,
+            "seq": 0,
+            "mode": mode,
+            "context": dict(context or {}),
+            "owner_client_id": owner_client_id or session_id,
+            "owner_token": owner_token,
+        }
         asyncio.create_task(self._run(task_id, session_id, content, mode, dict(context or {})))
         return task_id, trace_id
+
+    async def _emit(self, task: dict[str, Any], event: str, payload: dict[str, Any], *, span_id: str | None = None) -> dict[str, Any] | None:
+        """Map, retain, and broadcast one external event.
+
+        Mapping happens at production time so a task remains replayable even
+        when no SSE or WebSocket consumer was connected while it ran.
+        """
+        task_id = task["task_id"]
+        source = Envelope(
+            action=self._source_action(event),
+            payload=payload,
+            trace_id=task["trace_id"],
+            span_id=span_id or tracing.new_span_id(),
+            from_="kernel",
+        )
+        mapped = self.event_mapper.map(source, task_id=task_id, ts=_now())
+        if mapped is None:
+            return None
+        task["seq"] = mapped["event_id"]
+        if event in self.TERMINAL_EVENTS:
+            task["status"] = event.rsplit(".", 1)[-1]
+        now = time.time()
+        task["event_buffer"].append({"event": mapped, "recorded_at": now})
+        if task["status"] == "running":
+            cutoff = now - self.REPLAY_WINDOW_SECONDS
+            task["event_buffer"][:] = [entry for entry in task["event_buffer"] if self._entry_recorded_at(entry) >= cutoff]
+        for subscriber in tuple(task["subscribers"]):
+            await subscriber.put(mapped)
+        return mapped
 
     async def _run(self, task_id: str, session_id: str, content: str, mode: str, context: dict[str, Any] | None = None) -> None:
         t = self.tasks[task_id]
@@ -50,24 +119,29 @@ class TaskManager:
                 decision = classify(content, "auto")
             context = context or {}
             memory_recall = bool(context.get("memory_recall", True))
-            await q.put({"event": "task.created", "payload": {"session_id": session_id, "mode": decision.task_type}})
-            await self.memory.append(session_id, "user", content)
-            if decision.task_type == "workflow" and self.rpc is not None:
-                await self._run_workflow(t, q, session_id, content, context=context)
-                return
             retrieval_context = ""
             long_term_context = ""
-            if memory_recall and self.long_term_memory is not None:
-                rows = await self._long_term_recall(content, context)
-                long_term_context = "\n\n".join(str(row.get("content", "")) for row in rows if row.get("content"))
-            if decision.task_type == "search" and self.rpc is not None:
-                r = await self.rpc.call("retrieval.search", {"q": content}, trace_id=t["trace_id"])
-                if r.payload.get("degraded"):
-                    await q.put({"event": "task.degraded", "payload": {"reason_code": "UH-CAP-3001", "module": "llama_index", "description": "检索不可用，降级为纯对话"}})
-                else:
-                    docs = r.payload.get("docs") or r.payload.get("results") or []
-                    retrieval_context = "\n\n".join(str(d.get("untrusted_content", d.get("content", ""))) for d in docs if isinstance(d, dict))
-            await q.put({"event": "step.started", "payload": {"step_id": "st_1", "module": "llm", "name": "generate"}})
+            try:
+                await self._emit(t, "task.created", {"session_id": session_id, "mode": decision.task_type})
+                await self.memory.append(session_id, "user", content)
+                if decision.task_type == "workflow" and self.rpc is not None:
+                    await self._run_workflow(t, q, session_id, content, context=context)
+                    return
+                if memory_recall and self.long_term_memory is not None:
+                    rows = await self._long_term_recall(content, context)
+                    long_term_context = "\n\n".join(str(row.get("content", "")) for row in rows if row.get("content"))
+                if decision.task_type == "search" and self.rpc is not None:
+                    r = await self.rpc.call("retrieval.search", {"q": content}, trace_id=t["trace_id"])
+                    if r.payload.get("degraded"):
+                        await self._emit(t, "task.degraded", {"reason_code": "UH-CAP-3001", "module": "llama_index", "description": "检索不可用，降级为纯对话"})
+                    else:
+                        docs = r.payload.get("docs") or r.payload.get("results") or []
+                        retrieval_context = "\n\n".join(str(d.get("untrusted_content", d.get("content", ""))) for d in docs if isinstance(d, dict))
+                await self._emit(t, "step.started", {"step_id": "st_1", "module": "llm", "name": "generate"})
+            except Exception:
+                await self._emit(t, "task.failed", {"error": {"code": "UH-KRN-5001", "message": "任务执行失败", "retryable": False}})
+                await q.put(None)
+                return
             parts: list[str] = []
             try:
                 prompt = content
@@ -77,17 +151,20 @@ class TaskManager:
                     prompt += "\n\n长期记忆（仅作参考）：\n" + long_term_context
                 async for delta in self.llm.stream_chat([{"role": "user", "content": prompt}]):
                     parts.append(delta)
-                    await q.put({"event": "delta", "payload": {"text": delta, "index": len(parts) - 1}})
+                    await self._emit(t, "delta", {"text": delta, "index": len(parts) - 1})
                 answer = "".join(parts)
                 await self.memory.append(session_id, "assistant", answer)
                 await self._long_term_write(content, session_id, context, role="user")
                 await self._long_term_write(answer, session_id, context, role="assistant")
-                await q.put({"event": "step.finished", "payload": {"step_id": "st_1", "module": "llm", "status": "done", "duration_ms": 0}})
-                await q.put({"event": "task.finished", "payload": {"final_result": {"content": answer}, "duration_ms": 0}})
-                t["status"] = "finished"
+                await self._emit(t, "step.finished", {"step_id": "st_1", "module": "llm", "status": "done", "duration_ms": 0})
+                await self._emit(t, "task.finished", {"final_result": {"content": answer}, "duration_ms": 0})
             except LLMError as e:
-                await q.put({"event": "task.failed", "payload": {"error": {"code": e.code, "message": e.message, "retryable": e.retryable}}})
-                t["status"] = "failed"
+                await self._emit(t, "task.failed", {"error": {"code": e.code, "message": e.message, "retryable": e.retryable}})
+            except Exception as exc:
+                # Preserve the terminal-event guarantee when a non-LLM step
+                # fails unexpectedly.  The event mapper still validates the
+                # resulting envelope before it is retained or broadcast.
+                await self._emit(t, "task.failed", {"error": {"code": "UH-KRN-5001", "message": "任务执行失败", "retryable": False}})
             finally:
                 await q.put(None)
 
@@ -96,7 +173,7 @@ class TaskManager:
         task_id = task.get("task_id", "")
 
         async def emit(event: str, payload: dict) -> None:
-            await q.put({"event": event, "payload": payload})
+            await self._emit(task, event, payload)
 
         try:
             context = context or task.get("context", {})
@@ -108,14 +185,12 @@ class TaskManager:
             )
             if result.payload.get("degraded"):
                 if result.payload.get("error_code") == "UH-CAP-5021" and result.payload.get("reason") != "module unavailable":
-                    await q.put({"event": "task.failed", "payload": {"error": result.payload.get("error", {"code": "UH-CAP-5021", "message": "编排超时", "retryable": True})}})
-                    task["status"] = "failed"
+                    await self._emit(task, "task.failed", {"error": result.payload.get("error", {"code": "UH-CAP-5021", "message": "编排超时", "retryable": True})})
                     return
-                await q.put({"event": "task.degraded", "payload": {"reason_code": result.payload.get("error_code", "UH-CAP-5021"), "module": "orchestration", "description": "编排不可用，降级为普通对话"}})
+                await self._emit(task, "task.degraded", {"reason_code": result.payload.get("error_code", "UH-CAP-5021"), "module": "orchestration", "description": "编排不可用，降级为普通对话"})
                 async for delta in self.llm.stream_chat([{"role": "user", "content": content}]):
-                    await q.put({"event": "delta", "payload": {"text": delta, "index": 0}})
-                await q.put({"event": "task.finished", "payload": {"final_result": {"content": content}, "duration_ms": 0}})
-                task["status"] = "finished"
+                    await self._emit(task, "delta", {"text": delta, "index": 0})
+                await self._emit(task, "task.finished", {"final_result": {"content": content}, "duration_ms": 0})
                 if memory_recall:
                     await self._long_term_write(content, session_id, context, role="user")
                     await self._long_term_write(content, session_id, context, role="assistant")
@@ -125,14 +200,11 @@ class TaskManager:
             if memory_recall:
                 await self._long_term_write(content, session_id, context, role="user")
                 await self._long_term_write(answer, session_id, context, role="assistant")
-            await q.put({"event": "task.finished", "payload": {"final_result": {"content": answer}, "duration_ms": 0}})
-            task["status"] = "finished"
+            await self._emit(task, "task.finished", {"final_result": {"content": answer}, "duration_ms": 0})
         except OrchestrationError as exc:
-            await q.put({"event": "task.failed", "payload": {"error": exc.to_dict()}})
-            task["status"] = "failed"
+            await self._emit(task, "task.failed", {"error": exc.to_dict()})
         except Exception as exc:
-            await q.put({"event": "task.failed", "payload": {"error": {"code": "UH-CAP-4003", "message": str(exc), "retryable": False}}})
-            task["status"] = "failed"
+            await self._emit(task, "task.failed", {"error": {"code": "UH-CAP-4003", "message": str(exc), "retryable": False}})
         finally:
             await q.put(None)
 
@@ -147,31 +219,114 @@ class TaskManager:
         task["queue"] = asyncio.Queue()
         task["status"] = "running"
         skipped_steps = len(checkpoint.completed_nodes)
-        task["queue"].put_nowait({"event": "task.resumed", "payload": {"checkpoint_id": checkpoint.checkpoint_id, "skipped_steps": skipped_steps, "resumed_from_event_id": checkpoint.last_event_id}})
-        asyncio.create_task(self._run_workflow(task, task["queue"], task["session_id"], checkpoint.state.get("content", ""), resume=True, checkpoint_id=checkpoint.checkpoint_id, context=task.get("context", {})))
+        asyncio.create_task(self._resume_workflow(task, checkpoint.checkpoint_id, skipped_steps, checkpoint.last_event_id, checkpoint.state.get("content", "")))
         return {"task_id": task_id, "resumed_from_event_id": checkpoint.last_event_id, "checkpoint_id": checkpoint.checkpoint_id}
 
+    async def _resume_workflow(self, task: dict[str, Any], checkpoint_id: str, skipped_steps: int, resumed_from_event_id: int, content: str) -> None:
+        await self._emit(
+            task,
+            "task.resumed",
+            {
+                "checkpoint_id": checkpoint_id,
+                "skipped_steps": skipped_steps,
+                "resumed_from_event_id": resumed_from_event_id,
+            },
+        )
+        await self._run_workflow(
+            task,
+            task["queue"],
+            task["session_id"],
+            content,
+            resume=True,
+            checkpoint_id=checkpoint_id,
+            context=task.get("context", {}),
+        )
+
     async def stream(self, task_id: str) -> AsyncIterator[dict]:
-        t = self.tasks.get(task_id)
-        if t is None:
+        if task_id not in self.tasks:
             raise KeyError(task_id)
-        while True:
-            item = await t["queue"].get()
-            if item is None:
-                break
-            source_action = self._source_action(item["event"])
-            source = Envelope(
-                action=source_action,
-                payload=item["payload"],
-                trace_id=t["trace_id"],
-                span_id=item.get("span_id") or tracing.new_span_id(),
-                from_="kernel",
-            )
-            t["seq"] += 1
-            mapped = self.event_mapper.map(source, task_id=task_id, event_id=t["seq"], ts=_now())
-            # Audit-only internal events are never placed in the external stream.
-            if mapped is not None:
-                yield mapped
+        result = self.subscribe(task_id, after_event_id=0)
+        if result is None:
+            raise KeyError(task_id)
+        subscriber, replay, terminal = result
+        if not self.replay_available(task_id, after_event_id=0):
+            self.unsubscribe(task_id, subscriber)
+            return
+        try:
+            for item in replay:
+                yield item
+            if terminal:
+                return
+            while True:
+                item = await subscriber.get()
+                yield item
+                if item.get("event") in self.TERMINAL_EVENTS:
+                    return
+        finally:
+            self.unsubscribe(task_id, subscriber)
+
+    def owner_matches(self, task_id: str, *, client_id: str | None = None, token: str | None = None) -> bool:
+        task = self.tasks.get(task_id)
+        if task is None:
+            return False
+        owner_client_id = task.get("owner_client_id")
+        owner_token = task.get("owner_token")
+        # The protocol only standardizes token transport.  When a task was
+        # created under a bearer token, that token is the authoritative owner
+        # identity and a WebSocket need not also carry the local cookie.
+        if owner_token:
+            return bool(token and secrets.compare_digest(token, owner_token))
+        return not owner_client_id or client_id == owner_client_id
+
+    def subscribe(self, task_id: str, *, after_event_id: int = 0) -> tuple[asyncio.Queue, list[dict[str, Any]], bool] | None:
+        """Register a live subscriber and return its replay snapshot.
+
+        The registration and snapshot happen without an await, so events
+        produced after this method returns are delivered through the queue and
+        cannot be lost between replay and live delivery.
+        """
+        task = self.tasks.get(task_id)
+        if task is None:
+            return None
+        subscriber: asyncio.Queue = asyncio.Queue()
+        task["subscribers"].add(subscriber)
+        entries = list(task["event_buffer"])
+        events = [entry["event"] for entry in entries]
+        terminal = task.get("status") in {"finished", "failed", "cancelled"}
+        if terminal:
+            terminal_events = [event for event in events if event.get("event") in self.TERMINAL_EVENTS]
+            return subscriber, (terminal_events[-1:] if terminal_events else []), True
+
+        latest_id = events[-1]["event_id"] if events else 0
+        first_id = events[0]["event_id"] if events else 1
+        cutoff = time.time() - self.REPLAY_WINDOW_SECONDS
+        missing_prefix = bool(events and first_id > 1 and after_event_id < first_id - 1)
+        stale_requested = any(self._entry_recorded_at(entry) < cutoff for entry in entries if entry["event"]["event_id"] > after_event_id)
+        if missing_prefix or stale_requested:
+            return subscriber, [], False
+        if after_event_id >= latest_id:
+            return subscriber, [], False
+        return subscriber, [event for event in events if event["event_id"] > after_event_id], False
+
+    def unsubscribe(self, task_id: str, subscriber: asyncio.Queue) -> None:
+        task = self.tasks.get(task_id)
+        if task is not None:
+            task["subscribers"].discard(subscriber)
+
+    def replay_available(self, task_id: str, *, after_event_id: int = 0) -> bool:
+        task = self.tasks.get(task_id)
+        if task is None:
+            return False
+        if task.get("status") in {"finished", "failed", "cancelled"}:
+            return True
+        entries = task["event_buffer"]
+        if not entries:
+            return True
+        first_id = entries[0]["event"]["event_id"]
+        cutoff = time.time() - self.REPLAY_WINDOW_SECONDS
+        return not (first_id > 1 and after_event_id < first_id - 1) and not any(
+            self._entry_recorded_at(entry) < cutoff and entry["event"]["event_id"] > after_event_id for entry in entries
+        )
 
     @staticmethod
     def _source_action(event: str) -> str:

@@ -88,19 +88,39 @@ async function submit() {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({content, mode:'auto'})
     })).json();
-    const { task_id, stream_url, trace_id } = resp.data;
+    const { task_id, trace_id } = resp.data;
     const target = addMsg('assistant', '');
-    const es = new EventSource(stream_url);
-    es.onmessage = (e) => {
-      const ev = JSON.parse(e.data);
+    const wsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = wsScheme + '//' + location.host + '/api/v1/stream?task_id=' + encodeURIComponent(task_id) + '&after_event_id=0';
+    const ws = new WebSocket(wsUrl);
+    let lastEventId = 0;
+    ws.onopen = () => ws.send(JSON.stringify({op:'subscribe', task_id, after_event_id:lastEventId}));
+    ws.onmessage = (e) => {
+      const frame = JSON.parse(e.data);
+      if (frame.op === 'pong') return;
+      if (frame.op === 'error') {
+        breathing(false); showError(frame.error.code, frame.error.message, trace_id);
+        ws.close(); busy=false; send.disabled=false; return;
+      }
+      if (frame.op === 'replay_unavailable') {
+        fetch('/api/v1/tasks/'+task_id+'/steps').catch(() => null);
+        return;
+      }
+      const ev = frame;
+      lastEventId = ev.event_id || lastEventId;
       uiState = UHStateMachine.transition(uiState, ev);
       renderState();
       if (ev.event === 'delta') { target.textContent += ev.payload.text; target.scrollIntoView({behavior:'smooth'}); }
-      else if (ev.event === 'task.finished') { breathing(false); es.close(); busy=false; send.disabled=false; prompt.focus(); }
-      else if (ev.event === 'task.failed') { breathing(false); target.remove(); showError(ev.payload.error.code, ev.payload.error.message, trace_id); es.close(); busy=false; send.disabled=false; }
-      else if (ev.event === 'error') { breathing(false); showError(ev.payload.error.code, ev.payload.error.message, trace_id); es.close(); busy=false; send.disabled=false; }
+      else if (ev.event === 'task.finished') { breathing(false); busy=false; send.disabled=false; prompt.focus(); }
+      else if (ev.event === 'task.failed') { breathing(false); target.remove(); showError(ev.payload.error.code, ev.payload.error.message, trace_id); busy=false; send.disabled=false; }
     };
-    es.onerror = () => { breathing(false); es.close(); busy=false; send.disabled=false; };
+    ws.onclose = (event) => {
+      breathing(false);
+      if (event.code === 4408) fetch('/api/v1/tasks/'+task_id+'/steps').catch(() => null);
+      else if (event.code === 4403) showError('UH-USR-1002', '无权订阅任务', trace_id);
+      else if (event.code !== 1000) showError('UH-KRN-5001', '事件流已断开', trace_id);
+      busy=false; send.disabled=false;
+    };
   } catch (err) {
     breathing(false); showError('UH-KRN-5001', String(err), null); busy=false; send.disabled=false;
   }
