@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
-from .protocol import CapabilityRegistry, Envelope, EventBus
+from .protocol import CapabilityRegistry, Envelope, EventBus, module_error_code
 
 MAX_RESPONSE_BYTES = 262144
 DEFAULT_TIMEOUT_MS = 5000
@@ -154,7 +154,7 @@ class StdioTransport:
 
     async def _send(self, message: dict[str, Any]) -> None:
         if self.process is None or self.process.stdin is None:
-            raise MCPError("UH-CAP-4003", "MCP stdio server 未连接", retryable=True, detail={"module": "tool"})
+            raise MCPError(module_error_code(), "MCP stdio server 未连接", retryable=True, detail={"module": "tool"})
         data = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
         async with self._write_lock:
             self.process.stdin.write(data)
@@ -179,7 +179,7 @@ class StdioTransport:
         except asyncio.CancelledError:
             raise
         finally:
-            error = MCPError("UH-CAP-4003", "MCP stdio server 连接已关闭", retryable=True, detail={"module": "tool"})
+            error = MCPError(module_error_code(), "MCP stdio server 连接已关闭", retryable=True, detail={"module": "tool"})
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(error)
@@ -320,7 +320,7 @@ class MCPHost:
         }, timeout_ms=self.timeout_ms)
         result = response.get("result", {})
         if not isinstance(result, dict):
-            raise MCPError("UH-CAP-4003", "MCP initialize 响应无效", retryable=False, detail={"module": "tool"})
+            raise MCPError(module_error_code(), "MCP initialize 响应无效", retryable=False, detail={"module": "tool"})
         await self.transport.notify("notifications/initialized", {})
         self._connected = True
 
@@ -349,14 +349,14 @@ class MCPHost:
         except Exception as exc:
             if isinstance(exc, MCPError):
                 raise
-            raise MCPError("UH-CAP-4003", f"MCP 上游服务错误: {exc}", retryable=True, detail={"module": "tool"}) from exc
+            raise MCPError(module_error_code(), f"MCP 上游服务错误: {exc}", retryable=True, detail={"module": "tool"}) from exc
         if not isinstance(response, dict) or response.get("jsonrpc") != "2.0":
-            raise MCPError("UH-CAP-4003", "MCP 响应不是 JSON-RPC 2.0", retryable=True, detail={"module": "tool"})
+            raise MCPError(module_error_code(), "MCP 响应不是 JSON-RPC 2.0", retryable=True, detail={"module": "tool"})
         if "error" in response:
             error = response.get("error") or {}
             data = error.get("data") if isinstance(error, dict) else {}
             raise MCPError(
-                "UH-CAP-4003",
+                module_error_code(),
                 str(error.get("message", "MCP 上游服务错误")) if isinstance(error, dict) else "MCP 上游服务错误",
                 retryable=True,
                 detail={"module": "tool", "upstream_code": error.get("code") if isinstance(error, dict) else None, **(data if isinstance(data, dict) else {})},
@@ -369,7 +369,7 @@ class MCPHost:
         result = response.get("result", {})
         tools = result.get("tools", []) if isinstance(result, dict) else []
         if not isinstance(tools, list):
-            raise MCPError("UH-CAP-4003", "MCP tools/list 响应无效", retryable=False, detail={"module": "tool"})
+            raise MCPError(module_error_code(), "MCP tools/list 响应无效", retryable=False, detail={"module": "tool"})
         self._tools = {}
         for raw in tools:
             if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
@@ -394,9 +394,9 @@ class MCPHost:
             raise
         result = response.get("result")
         if not isinstance(result, dict):
-            raise MCPError("UH-CAP-4003", "MCP tools/call 响应无效", retryable=True, detail={"module": "tool", "tool_name": name})
+            raise MCPError(module_error_code(), "MCP tools/call 响应无效", retryable=True, detail={"module": "tool", "tool_name": name})
         if result.get("isError"):
-            raise MCPError("UH-CAP-4003", f"工具 {name} 返回错误", retryable=True, detail={"module": "tool", "tool_name": name})
+            raise MCPError(module_error_code(), f"工具 {name} 返回错误", retryable=True, detail={"module": "tool", "tool_name": name})
         return result
 
     @staticmethod

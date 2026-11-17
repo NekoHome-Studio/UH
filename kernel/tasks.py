@@ -18,7 +18,7 @@ from .llm import LLMError
 from .orchestration import OrchestrationError
 from .router import classify
 from .event_mapping import EventMapper
-from .protocol import Envelope
+from .protocol import Envelope, module_error_code
 from .mcp import MCPError
 from .confirmation import ConfirmationManager
 
@@ -272,7 +272,7 @@ class TaskManager:
                     await self._run_workflow(t, q, session_id, content, context=context)
                     return
                 if memory_recall and self.long_term_memory is not None:
-                    rows = await self._long_term_recall(content, context)
+                    rows = await self._long_term_recall(content, context, session_id=session_id)
                     long_term_context = "\n\n".join(str(row.get("content", "")) for row in rows if row.get("content"))
                 if decision.task_type == "search" and self.rpc is not None:
                     r = await self.rpc.call("retrieval.search", {"q": content}, trace_id=t["trace_id"])
@@ -351,7 +351,7 @@ class TaskManager:
         except OrchestrationError as exc:
             await self._emit(task, "task.failed", {"error": exc.to_dict()})
         except Exception as exc:
-            await self._emit(task, "task.failed", {"error": {"code": "UH-CAP-4003", "message": str(exc), "retryable": False}})
+            await self._emit(task, "task.failed", {"error": {"code": module_error_code(), "message": "编排任务执行异常", "retryable": False}})
         finally:
             await q.put(None)
 
@@ -512,11 +512,15 @@ class TaskManager:
             return None
         return {"task_id": task_id, "status": t["status"], "session_id": t["session_id"]}
 
-    async def _long_term_recall(self, content: str, context: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _long_term_recall(self, content: str, context: dict[str, Any], session_id: str | None = None) -> list[dict[str, Any]]:
         method = getattr(self.long_term_memory, "arecall", None) or getattr(self.long_term_memory, "recall", None)
         if method is None:
             return []
-        result = method(content, top_k=int(context.get("top_k", 5)), session_id=context.get("session_id"), memory_recall=True)
+        # ADR-003：记忆召回范围双模式——global 跨会话（默认）/ session 仅本会话；
+        # context.memory_scope 覆盖全局 UH_MEMORY_SCOPE，插件可指定。
+        scope = str(context.get("memory_scope") or os.environ.get("UH_MEMORY_SCOPE", "global")).lower()
+        recall_session = session_id if scope == "session" else context.get("session_id")
+        result = method(content, top_k=int(context.get("top_k", 5)), session_id=recall_session, memory_recall=True)
         return await result if inspect.isawaitable(result) else result
 
     async def _long_term_write(self, content: str, session_id: str, context: dict[str, Any], *, role: str) -> None:

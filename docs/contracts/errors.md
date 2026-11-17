@@ -32,6 +32,7 @@
 | UH-CAP-4001 | LLM Token 超限 | 400 | false | model、max_tokens、requested_tokens |
 | UH-CAP-4002 | LLM 上游限流 | 429 | true | model、provider；retry_after_ms 必填 |
 | UH-CAP-4003 | LLM 上游服务错误 | 502 | true | model、provider、upstream_status |
+| UH-CAP-4004 | 能力模块执行错误（MCP/编排/插件，ADR-003 只增） | 502 | true | module 必填 + tool_name/node_id；UH_CAP_ERROR_MODE=legacy 回退 CAP-4003 |
 | UH-CAP-5021 | 能力模块执行超时 | 504 | true（受幂等约束） | module 必填 + timeout_ms，见 §3 |
 | UH-MEM-7001 | 短期记忆过期 | 410 | false | session_id |
 
@@ -40,6 +41,7 @@
 - UH-KRN-2001 语义边界：auto 模式未识别时兜底 chat 并记 WARN（M0-2 约定），不产出错误码；2001 仅用于路由内部故障或无法兜底的情形。
 - UH-CAP-3001 为降级信号：chat/search 链路 HTTP 200，data 正常返回，meta.degraded=true，error 携带 CAP-3001 说明降级原因，不阻断对话（§4.3）。
 - UH-CAP-5021 的 retryable=true 仅表示"可重试"；是否自动重试受幂等约束：幂等工具才可自动重试，irreversible 禁止（§9.6）。
+- UH-CAP-4004（ADR-003 只增）：能力模块执行错误专用码，与 CAP-4003（LLM 上游）语义分离；UH_CAP_ERROR_MODE=strict（默认）用 4004，legacy 回退 4003 兼容旧插件。CAP-4003 原义不变。
 
 ## 3. UH-CAP-5021 detail.module 规范
 

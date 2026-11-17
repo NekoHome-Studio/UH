@@ -243,3 +243,48 @@ def test_rest_ops_exempt_when_auth_required(monkeypatch):
     with TestClient(create_app()) as c:
         assert c.get("/health").status_code == 200  # ops 豁免
         assert c.get("/ready").status_code == 200
+
+
+# --- ADR-003 错误码双模式 ---
+def test_module_error_code_modes(monkeypatch):
+    from kernel.protocol import module_error_code
+    monkeypatch.setenv("UH_CAP_ERROR_MODE", "strict")
+    assert module_error_code() == "UH-CAP-4004"
+    monkeypatch.setenv("UH_CAP_ERROR_MODE", "legacy")
+    assert module_error_code() == "UH-CAP-4003"
+    monkeypatch.delenv("UH_CAP_ERROR_MODE", raising=False)
+    assert module_error_code() == "UH-CAP-4004"  # 默认 strict
+
+
+def test_mcp_module_error_uses_configured_code(monkeypatch):
+    from kernel.protocol import EventBus
+    from kernel.mcp import MCPHost, InProcessTransport, MCPError
+    monkeypatch.setenv("UH_CAP_ERROR_MODE", "strict")
+    def handler(req):
+        return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": -32000, "message": "upstream boom"}}
+    host = MCPHost(InProcessTransport(handler), bus=EventBus())
+    async def run():
+        try:
+            await host.call_tool("x", {})
+            return None
+        except MCPError as e:
+            return e.code
+    assert asyncio.run(run()) == "UH-CAP-4004"
+
+
+# --- ADR-003 记忆召回范围双模式 ---
+def test_memory_scope_session_vs_global(tmp_path):
+    from kernel.long_term_memory import LongTermMemory
+    from kernel.retrieval import LocalVectorStore
+    ltm = LongTermMemory(path=tmp_path / "m.json", vector_store=LocalVectorStore(tmp_path / "v.json"))
+    ltm.write("alpha project recipe", session_id="uh_ses_a")
+    ltm.write("beta gardening topic", session_id="uh_ses_b")
+    tm = TaskManager(None, None, long_term_memory=ltm)
+    # session 模式：仅本会话
+    rows_a = asyncio.run(tm._long_term_recall("alpha project", {"memory_scope": "session"}, session_id="uh_ses_a"))
+    assert rows_a and all(r["session_id"] == "uh_ses_a" for r in rows_a)
+    rows_cross = asyncio.run(tm._long_term_recall("beta gardening", {"memory_scope": "session"}, session_id="uh_ses_a"))
+    assert rows_cross == []  # B 会话记忆被隔离
+    # global 模式：跨会话
+    rows_g = asyncio.run(tm._long_term_recall("beta gardening", {"memory_scope": "global"}, session_id="uh_ses_a"))
+    assert any(r["session_id"] == "uh_ses_b" for r in rows_g)

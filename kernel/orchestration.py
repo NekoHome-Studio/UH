@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
+from .protocol import module_error_code
+
 
 ORCHESTRATION_TIMEOUT = "UH-CAP-5021"
 
@@ -245,7 +247,7 @@ class OrchestrationService:
             nonlocal event_id, checkpoint
             node = self.nodes.get(node_id)
             if node is None:
-                raise OrchestrationError("UH-CAP-4003", f"编排节点不存在: {node_id}", detail={"module": "orchestration", "node_id": node_id})
+                raise OrchestrationError(module_error_code(), f"编排节点不存在: {node_id}", detail={"module": "orchestration", "node_id": node_id})
             step_id = f"{task_id}:{node_id}"
             started = time.monotonic()
             event_id = (await self._emit(emit, "step.started", {"step_id": step_id, "module": "langgraph", "name": node_id, "index": self.NODE_ORDER.index(node_id)})) or (event_id + 1)
@@ -297,8 +299,8 @@ class OrchestrationService:
                 checkpoint.updated_at = _now()
                 checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
                 self.store.save(checkpoint)
-                await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": "UH-CAP-4003", "message": str(exc), "retryable": False, "detail": {"module": "orchestration", "node_id": node_id}}})
-                raise OrchestrationError("UH-CAP-4003", f"编排节点 {node_id} 失败: {exc}", detail={"module": "orchestration", "node_id": node_id}) from exc
+                await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": module_error_code(), "message": str(exc), "retryable": False, "detail": {"module": "orchestration", "node_id": node_id}}})
+                raise OrchestrationError(module_error_code(), f"编排节点 {node_id} 失败: {exc}", detail={"module": "orchestration", "node_id": node_id}) from exc
 
         graph = StateGraph(dict)
         for index, node_id in enumerate(remaining):
@@ -346,7 +348,7 @@ class OrchestrationService:
                 continue
             node = self.nodes.get(node_id)
             if node is None:
-                raise OrchestrationError("UH-CAP-4003", f"编排节点不存在: {node_id}", detail={"module": "orchestration", "node_id": node_id})
+                raise OrchestrationError(module_error_code(), f"编排节点不存在: {node_id}", detail={"module": "orchestration", "node_id": node_id})
             step_id = f"{task_id}:{node_id}"
             started = time.monotonic()
             event_id = (await self._emit(emit, "step.started", {"step_id": step_id, "module": "langgraph", "name": node_id, "index": index})) or (event_id + 1)
@@ -396,8 +398,8 @@ class OrchestrationService:
                 checkpoint.updated_at = _now()
                 checkpoint.checkpoint_id = "uh_ckpt_" + secrets.token_hex(12)
                 self.store.save(checkpoint)
-                await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": "UH-CAP-4003", "message": str(exc), "retryable": False, "detail": {"module": "orchestration", "node_id": node_id}}})
-                raise OrchestrationError("UH-CAP-4003", f"编排节点 {node_id} 失败: {exc}", detail={"module": "orchestration", "node_id": node_id}) from exc
+                await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": module_error_code(), "message": str(exc), "retryable": False, "detail": {"module": "orchestration", "node_id": node_id}}})
+                raise OrchestrationError(module_error_code(), f"编排节点 {node_id} 失败: {exc}", detail={"module": "orchestration", "node_id": node_id}) from exc
         checkpoint.status = "completed"
         checkpoint.next_node = None
         checkpoint.updated_at = _now()

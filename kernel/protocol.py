@@ -76,6 +76,14 @@ class EventBus:
         return self._seq
 
 
+def module_error_code() -> str:
+    """ADR-003：能力模块错误码双模式。strict（默认）→ UH-CAP-4004（语义正确）；
+    legacy → UH-CAP-4003（向后兼容旧插件）。LLM 上游错误恒为 CAP-4003，不走此助手。"""
+    import os
+    mode = os.environ.get("UH_CAP_ERROR_MODE", "strict").lower()
+    return "UH-CAP-4003" if mode == "legacy" else "UH-CAP-4004"
+
+
 class StorageGuard:
     """存储隔离：模块仅可访问自身命名空间（§6.6 禁止直连他模块存储）。"""
 
@@ -139,4 +147,4 @@ class CapabilityRegistry:
             return self._degraded(req, "deadline exceeded")
         except Exception as e:
             await self.bus.publish("capability.module.failed", {"action": action, "error": str(e)}, trace_id=trace_id)
-            return self._degraded(req, "module error: " + str(e), code="UH-CAP-4003")
+            return self._degraded(req, "module error: " + str(e), code=module_error_code())

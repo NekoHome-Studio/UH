@@ -102,7 +102,7 @@ def test_rpc_handler_error_degraded():
         raise RuntimeError("crash")
     rpc.register("bad.op", bad)
     resp = asyncio.run(rpc.call("bad.op", {}))
-    assert resp.payload["degraded"] is True and resp.payload["error_code"] == "UH-CAP-4003"
+    assert resp.payload["degraded"] is True and resp.payload["error_code"] == "UH-CAP-4004"  # ADR-003 strict 默认
 
 
 def test_storage_isolation():
