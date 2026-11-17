@@ -68,15 +68,18 @@ def test_workflow_resume_endpoint_and_events():
     with TestClient(app) as client:
         sid = client.post("/api/v1/sessions").json()["data"]["session_id"]
         handle = client.post("/api/v1/sessions/" + sid + "/messages", json={"content": "按步骤制定一个计划", "mode": "workflow"}).json()["data"]
-        with client.stream("GET", handle["stream_url"]) as response:
+        with client.stream("GET", handle["sse_url"]) as response:
             body = "".join(response.iter_text())
         events = [line for line in body.split("\n\n") if line.startswith("data: ")]
         names = [__import__("json").loads(line[6:])["event"] for line in events]
         assert names.count("step.started") == 4 and "task.finished" in names
+        # 终态唯一性（审查 P0-2）：已完成任务 resume 须 409，不得重发终态事件
         resumed = client.post("/api/v1/tasks/" + handle["task_id"] + "/resume", json={})
-        assert resumed.status_code == 200
-        assert resumed.json()["data"]["task_id"] == handle["task_id"]
-        assert "resumed_from_event_id" in resumed.json()["data"]
+        assert resumed.status_code == 409
+        assert resumed.json()["error"]["code"] == "UH-USR-1003"
+        buffer = app.state.tasks.tasks[handle["task_id"]]["event_buffer"]
+        terminals = [e["event"]["event"] for e in buffer if e["event"]["event"] in {"task.finished", "task.failed", "task.cancelled"}]
+        assert len(terminals) == 1  # 终态仅一次
 
 
 def test_disabling_orchestration_degrades_workflow_but_chat_completes():
@@ -85,7 +88,7 @@ def test_disabling_orchestration_degrades_workflow_but_chat_completes():
         client.post("/api/v1/dev/capability/orchestration.run/toggle?available=false")
         sid = client.post("/api/v1/sessions").json()["data"]["session_id"]
         handle = client.post("/api/v1/sessions/" + sid + "/messages", json={"content": "按步骤制定一个计划", "mode": "workflow"}).json()["data"]
-        with client.stream("GET", handle["stream_url"]) as response:
+        with client.stream("GET", handle["sse_url"]) as response:
             body = "".join(response.iter_text())
         names = [__import__("json").loads(line[6:])["event"] for line in body.split("\n\n") if line.startswith("data: ")]
         assert "task.degraded" in names and "task.finished" in names

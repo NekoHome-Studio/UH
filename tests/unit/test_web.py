@@ -33,7 +33,7 @@ def test_stream_end_to_end():
     with TestClient(create_app()) as c:
         sid = c.post("/api/v1/sessions").json()["data"]["session_id"]
         handle = c.post("/api/v1/sessions/" + sid + "/messages", json={"content": "你好"}).json()["data"]
-        with c.stream("GET", handle["stream_url"]) as r:
+        with c.stream("GET", handle["sse_url"]) as r:
             assert r.status_code == 200
             text = "".join(chunk for chunk in r.iter_text())
     events = [json.loads(line[len("data: "):]) for line in text.split("\n\n") if line.startswith("data: ")]
@@ -55,7 +55,7 @@ def _search_events(c, available):
     c.post("/api/v1/dev/capability/retrieval.search/toggle?available=" + str(available).lower())
     sid = c.post("/api/v1/sessions").json()["data"]["session_id"]
     handle = c.post("/api/v1/sessions/" + sid + "/messages", json={"content": "搜索一下 MCP 协议"}).json()["data"]
-    with c.stream("GET", handle["stream_url"]) as r:
+    with c.stream("GET", handle["sse_url"]) as r:
         text = "".join(chunk for chunk in r.iter_text())
     return [json.loads(line[len("data: "):]) for line in text.split("\n\n") if line.startswith("data: ")]
 

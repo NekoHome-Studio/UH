@@ -187,7 +187,11 @@ class LlamaIndexChromaStore(ChromaVectorStore):
 
 
 def _read_document(path: str | Path) -> tuple[str, str, str]:
-    file = Path(path)
+    file = Path(path).resolve()
+    # 安全修复（审查 R3）：限制索引根目录，防任意路径读取外泄。
+    root = Path(os.environ.get("UH_RETRIEVAL_ROOT", str(Path.cwd() / "data"))).resolve()
+    if not file.is_relative_to(root):
+        raise ValueError("文档路径越界：仅允许索引 UH_RETRIEVAL_ROOT 内的文件")
     suffix = file.suffix.lower()
     if suffix in {".md", ".markdown", ".txt"}:
         return sanitize_document(file.read_text(encoding="utf-8")), str(file), file.stem

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -107,6 +108,11 @@ def _error_for_status(status_code: int, message: str = "请求失败", detail: d
 
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dev_enabled() -> bool:
+    # dev 端点门禁（审查 P1-1）：生产设 UH_DEV_MODE=0 关闭；默认开发态开启。
+    return _truthy(os.environ.get("UH_DEV_MODE", "1"))
 
 
 def _bearer_token(value: str | None) -> str | None:
@@ -225,7 +231,12 @@ def create_app() -> FastAPI:
             log_event(log, logging.INFO, "request.received", method=request.method, path=request.url.path)
             start = time.perf_counter()
             idempotency_key = request.headers.get("Idempotency-Key") if request.method == "POST" else None
-            cache_key = (request.method, request.url.path, idempotency_key) if idempotency_key else None
+            cache_key = None
+            if idempotency_key:
+                # 审查修复：幂等键绑定请求体哈希——同键不同 body 不得错误复用首次结果
+                req_body = await request.body()
+                body_hash = hashlib.sha256(req_body).hexdigest()[:16]
+                cache_key = (request.method, request.url.path, idempotency_key, body_hash)
             is_replay = bool(cache_key and cache_key in app.state.idempotency_cache)
             if is_replay:
                 cached = app.state.idempotency_cache[cache_key]
@@ -295,7 +306,14 @@ def create_app() -> FastAPI:
                         "status_code": response.status_code,
                         "headers": {**dict(response.headers), "X-Trace-Id": trace_id},
                         "media_type": "application/json",
+                        "stored_at": time.time(),
                     }
+                    # 审查修复：TTL + 容量上限，防进程内 dict 单调增长
+                    now = time.time()
+                    for k in [k for k, v in app.state.idempotency_cache.items() if now - v.get("stored_at", now) > 300]:
+                        app.state.idempotency_cache.pop(k, None)
+                    while len(app.state.idempotency_cache) > 1000:
+                        app.state.idempotency_cache.pop(next(iter(app.state.idempotency_cache)), None)
             if not is_replay:
                 response.headers["X-Trace-Id"] = trace_id
             return response
@@ -424,7 +442,13 @@ def create_app() -> FastAPI:
         # Keep the local client identity available to the subsequent browser
         # WebSocket handshake when the session was supplied directly.
         response.set_cookie("uh_client_id", client_id, httponly=True, samesite="lax")
-        return _envelope({"task_id": task_id, "stream_url": "/api/v1/tasks/" + task_id + "/stream", "trace_id": trace_id})
+        # 审查修复：stream_url 按契约 task-flow §1 返回 WS 句柄（F2 按 scheme 区分）；
+        # sse_url 保留 M0 SSE 过渡通道。
+        ws_scheme = "wss" if request.url.scheme == "https" else "ws"
+        host = request.headers.get("host") or request.url.netloc
+        stream_url = ws_scheme + "://" + host + "/api/v1/stream?task_id=" + task_id
+        sse_url = "/api/v1/tasks/" + task_id + "/stream"
+        return _envelope({"task_id": task_id, "stream_url": stream_url, "sse_url": sse_url, "trace_id": trace_id})
 
     @app.get("/api/v1/tasks/{task_id}")
     async def get_task(task_id: str):
@@ -435,7 +459,11 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/tasks/{task_id}/resume")
     async def resume_task(task_id: str, req: ResumeRequest | None = None):
-        result = app.state.tasks.resume(task_id, req.checkpoint_id if req else None)
+        from .tasks import ResumeConflictError
+        try:
+            result = app.state.tasks.resume(task_id, req.checkpoint_id if req else None)
+        except ResumeConflictError as exc:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", str(exc))), ensure_ascii=False), status_code=409, media_type="application/json")
         if result is None:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task or checkpoint not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         return _envelope(result)
@@ -451,22 +479,49 @@ def create_app() -> FastAPI:
             return Response(content=json.dumps(_envelope(error=_error_payload(exc.code, exc.message, retryable=exc.retryable, detail=exc.detail)), ensure_ascii=False), status_code=status, media_type="application/json")
         return _envelope({"call_id": resolved.call_id, "decision": resolved.decision, "operator": resolved.operator})
 
+    @app.get("/api/v1/tasks/{task_id}/steps")
+    async def task_steps(task_id: str):
+        steps = app.state.tasks.steps(task_id)
+        if steps is None:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
+        return _envelope({"steps": steps})
+
+    @app.post("/api/v1/tasks/{task_id}/cancel")
+    async def cancel_task(task_id: str):
+        from .tasks import ResumeConflictError
+        try:
+            result = await app.state.tasks.cancel(task_id, reason="user_request")
+        except ResumeConflictError as exc:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", str(exc))), ensure_ascii=False), status_code=409, media_type="application/json")
+        if result is None:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
+        return _envelope(result)
+
     @app.post("/api/v1/dev/tool-task", status_code=202)
     async def dev_tool_task(req: ToolTaskRequest):
-        # 开发/测试入口：经检索 MCP Host 调用高危工具，触发确认门。
+        if not _dev_enabled():
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         task_id, trace_id = app.state.tasks.create_tool_task(req.session_id, req.tool_name, req.arguments, req.risk_level, app.state.retrieval_host)
-        return _envelope({"task_id": task_id, "trace_id": trace_id})
+        return _envelope({"task_id": task_id, "trace_id": trace_id, "sse_url": "/api/v1/tasks/" + task_id + "/stream"})
 
     @app.get("/api/v1/dev/confirmations")
     async def dev_confirmations(task_id: str | None = None):
-        if task_id:
-            items = [r.to_dict() for r in app.state.confirmations.pending_for_task(task_id)]
-        else:
-            items = [r.to_dict() for r in app.state.confirmations._requests.values()]
+        if not _dev_enabled():
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "not found")), ensure_ascii=False), status_code=404, media_type="application/json")
+        reqs = app.state.confirmations.pending_for_task(task_id) if task_id else list(app.state.confirmations._requests.values())
+        # 安全修复：不再向 HTTP 泄漏完整确认令牌（令牌仅经任务自有事件流送达归属者）
+        items = []
+        for r in reqs:
+            d = r.to_dict()
+            tok = d.get("confirmation_token") or ""
+            d["confirmation_token"] = (tok[:6] + "…[redacted]") if tok else None
+            items.append(d)
         return _envelope({"confirmations": items, "audit": app.state.confirmations.audit})
 
     @app.post("/api/v1/dev/capability/{name}/toggle")
     async def toggle_cap(name: str, available: bool = True):
+        if not _dev_enabled():
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         app.state.rpc.set_available(name, available)
         return _envelope({"name": name, "available": app.state.rpc.is_available(name)})
 
@@ -505,7 +560,9 @@ def create_app() -> FastAPI:
         auth_required = _truthy(os.environ.get("UH_WS_AUTH_REQUIRED") or os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
         token = _bearer_token(params.get("token")) or _bearer_token(websocket.headers.get("Authorization"))
         authenticated = not auth_required
-        if token and (expected_token is None or secrets.compare_digest(token, expected_token)):
+        # 安全修复：token 仅在配置了期望值且匹配时才有效；未配期望 token 时
+        # 任意 token 不得放行（修复空 token 绕过）。
+        if token and expected_token is not None and secrets.compare_digest(token, expected_token):
             authenticated = True
         elif token and auth_required:
             await websocket.send_json({"op": "error", "error": _error_payload("UH-USR-1001", "未认证")})
@@ -552,8 +609,8 @@ def create_app() -> FastAPI:
             return subscriber, False
 
         if authenticated:
-            subscriber, done = await attach(query_task_id, query_after)
-            if done:
+            subscriber, closed = await attach(query_task_id, query_after)
+            if closed:
                 return
 
         receive_task = asyncio.create_task(websocket.receive_json())
@@ -577,15 +634,18 @@ def create_app() -> FastAPI:
                         await websocket.send_json({"op": "pong", "ts": message.get("ts", int(time.time()))})
                     elif op == "auth":
                         supplied = _bearer_token(message.get("token"))
-                        if not supplied or (expected_token is not None and not secrets.compare_digest(supplied, expected_token)):
+                        if not supplied or expected_token is None or not secrets.compare_digest(supplied, expected_token):
                             await close_error("UH-USR-1001", "未认证", 4401)
                             return
                         token = supplied
                         authenticated = True
                         if subscriber is None:
-                            subscriber, done = await attach(query_task_id, query_after)
-                            if done:
+                            subscriber, closed = await attach(query_task_id, query_after)
+                            if closed:
                                 return
+                            # 修复：鉴权后重建队列读取任务，否则只回放不推实时事件
+                            if subscriber is not None:
+                                queue_task = asyncio.create_task(subscriber.get())
                     elif op == "subscribe":
                         if auth_required and not authenticated:
                             await close_error("UH-USR-1001", "未认证", 4401)
@@ -605,9 +665,12 @@ def create_app() -> FastAPI:
                             if queue_task is not None:
                                 queue_task.cancel()
                                 queue_task = None
-                            subscriber, done = await attach(target, cursor)
-                            if done:
+                            subscriber, closed = await attach(target, cursor)
+                            if closed:
                                 return
+                            # 修复：重订阅后重建队列读取任务，否则实时事件永久丢失
+                            if subscriber is not None:
+                                queue_task = asyncio.create_task(subscriber.get())
                     receive_task = asyncio.create_task(websocket.receive_json())
                 if queue_task is not None and queue_task in done:
                     event = queue_task.result()

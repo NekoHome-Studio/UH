@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 import pytest
@@ -123,18 +124,24 @@ def test_reject_cancelled_reason_and_error():
 # ---------- REST 确认端点（拒绝 + 防重放 + 审计） ----------
 
 def test_rest_confirm_reject_and_replay():
-    with TestClient(create_app()) as c:
+    app = create_app()
+    with TestClient(app) as c:
         sid = c.post("/api/v1/sessions").json()["data"]["session_id"]
         handle = c.post("/api/v1/dev/tool-task", json={"session_id": sid, "tool_name": "search", "arguments": {"query": "x"}, "risk_level": "irreversible"}).json()["data"]
         task_id = handle["task_id"]
+        # 测试直接读 manager 取令牌（审查建议：不依赖 HTTP 泄漏端点）；
+        # 生产中令牌经任务自有事件流送达归属者。
         token = None
         for _ in range(300):
-            confs = c.get("/api/v1/dev/confirmations?task_id=" + task_id).json()["data"]["confirmations"]
-            if confs:
-                token = confs[0]["confirmation_token"]
+            pend = app.state.confirmations.pending_for_task(task_id)
+            if pend:
+                token = pend[0].token
                 break
             time.sleep(0.01)
         assert token
+        # dev 端点已脱敏，不再返回完整令牌
+        confs = c.get("/api/v1/dev/confirmations?task_id=" + task_id).json()["data"]["confirmations"]
+        assert confs and "redacted" in confs[0]["confirmation_token"]
         r = c.post("/api/v1/tasks/" + task_id + "/confirm", json={"confirmation_token": token, "decision": "rejected", "operator": "rest-user"})
         assert r.status_code == 200 and r.json()["data"]["decision"] == "rejected"
         st = None

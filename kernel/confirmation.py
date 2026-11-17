@@ -131,6 +131,17 @@ class ConfirmationManager:
         self._audit(req)
         return req
 
+    def mark_timeout(self, req: ConfirmationRequest) -> ConfirmationRequest:
+        """TTL 到期自动收敛（M1 审查修复）：标记 rejected/timeout 并审计，
+        使 resolved_by=timeout 路径真实可达，任务不再永久挂起。"""
+        if req.status == "pending":
+            req.status = "rejected"
+            req.decision = "rejected"
+            req.operator = "timeout"
+            req.resolved_at = _iso(_now())
+            self._audit(req)
+        return req
+
     def _audit(self, req: ConfirmationRequest) -> None:
         record = {
             "event": "tool.confirm",

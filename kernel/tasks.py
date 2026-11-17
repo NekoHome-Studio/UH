@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import secrets
 import time
 from datetime import datetime, timezone
@@ -24,6 +25,10 @@ from .confirmation import ConfirmationManager
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+class ResumeConflictError(Exception):
+    """任务已终态仍请求 resume（违反终态唯一性，审查 P0-2 修复）。"""
 
 
 class TaskManager:
@@ -81,7 +86,7 @@ class TaskManager:
             "owner_client_id": owner_client_id or session_id,
             "owner_token": owner_token,
         }
-        asyncio.create_task(self._run(task_id, session_id, content, mode, dict(context or {})))
+        self.tasks[task_id]["_runner"] = asyncio.create_task(self._run(task_id, session_id, content, mode, dict(context or {})))
         return task_id, trace_id
 
     def create_tool_task(
@@ -105,7 +110,7 @@ class TaskManager:
             "session_id": session_id, "trace_id": trace_id, "seq": 0, "mode": "tool",
             "context": {}, "owner_client_id": owner_client_id or session_id, "owner_token": owner_token,
         }
-        asyncio.create_task(self._run_tool(task_id, session_id, tool_name, arguments, risk_level, host))
+        self.tasks[task_id]["_runner"] = asyncio.create_task(self._run_tool(task_id, session_id, tool_name, arguments, risk_level, host))
         return task_id, trace_id
 
     async def _run_tool(self, task_id: str, session_id: str, tool_name: str, arguments: dict[str, Any], risk_level: str, host: Any) -> None:
@@ -123,10 +128,16 @@ class TaskManager:
                     "call_id": req.call_id, "tool_name": name, "risk_level": risk,
                     "summary": summary, "confirmation_token": req.token, "expires_at": req.expires_at,
                 })
-                decision = await fut
+                try:
+                    decision = await asyncio.wait_for(fut, timeout=self.confirmations.ttl_s)
+                except asyncio.TimeoutError:
+                    # TTL 自动超时收敛：拒绝执行 + resolved_by=timeout + 审计
+                    decision = "rejected"
+                    t["confirm_timeout"] = True
+                    self.confirmations.mark_timeout(req)
                 await self._emit(t, "task.confirmation_resolved", {
                     "call_id": req.call_id, "decision": decision,
-                    "resolved_by": "timeout" if req.operator == "timeout" else "user",
+                    "resolved_by": "timeout" if t.get("confirm_timeout") else "user",
                 })
                 return decision
 
@@ -136,15 +147,56 @@ class TaskManager:
             except MCPError as exc:
                 if exc.code == "UH-USR-1002":
                     await self._emit(t, "task.cancelled", {
-                        "reason": "confirmation_rejected",
+                        "reason": "timeout" if t.get("confirm_timeout") else "confirmation_rejected",
                         "error": {"code": "UH-USR-1002", "message": exc.message, "retryable": False},
                         "completed_steps": 0,
                     })
                 else:
                     await self._emit(t, "task.failed", {"error": exc.to_dict()})
+            except Exception:
+                # 审查修复：非 MCPError 异常也必须送达终态，不得永久 running
+                await self._emit(t, "task.failed", {"error": {"code": "UH-KRN-5001", "message": "工具任务执行异常", "retryable": False}})
             finally:
                 self._confirm_futures.pop(task_id, None)
                 await q.put(None)
+
+    def steps(self, task_id: str) -> list[dict[str, Any]] | None:
+        """超窗回退载体（task-flow §5.4 / 决议 C8）：seq = step.started 的 event_id。"""
+        task = self.tasks.get(task_id)
+        if task is None:
+            return None
+        by_step: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for entry in task["event_buffer"]:
+            ev = entry["event"]
+            name, payload = ev.get("event"), ev.get("payload", {})
+            sid = payload.get("step_id")
+            if not sid:
+                continue
+            if name == "step.started":
+                by_step[sid] = {"seq": ev["event_id"], "step_id": sid, "module": payload.get("module"), "name": payload.get("name"), "status": "running", "duration_ms": None}
+                order.append(sid)
+            elif name == "step.finished" and sid in by_step:
+                by_step[sid]["status"] = "done"
+                by_step[sid]["duration_ms"] = payload.get("duration_ms")
+            elif name == "step.failed" and sid in by_step:
+                by_step[sid]["status"] = "failed"
+        return [by_step[s] for s in order]
+
+    async def cancel(self, task_id: str, reason: str = "user_request") -> dict | None:
+        """取消任务（task-flow §4）：终态任务抛 ResumeConflictError（端点转 409）。"""
+        task = self.tasks.get(task_id)
+        if task is None:
+            return None
+        if task.get("status") in {"finished", "failed", "cancelled"}:
+            raise ResumeConflictError("任务已终态，不可取消")
+        completed = sum(1 for e in task["event_buffer"] if e["event"]["event"] == "step.finished")
+        runner = task.get("_runner")
+        if runner is not None and not runner.done():
+            runner.cancel()
+        task["status"] = "cancelling"  # 非 running 避免 _emit 裁剪缓冲；_emit 置终态
+        await self._emit(task, "task.cancelled", {"reason": reason, "completed_steps": completed})
+        return {"task_id": task_id, "reason": reason, "completed_steps": completed}
 
     def resolve_confirmation(self, task_id: str, token: str, decision: str, operator: str = "user"):
         """REST/CLI 确认入口：裁决令牌并唤醒等待中的任务。"""
@@ -252,10 +304,13 @@ class TaskManager:
         try:
             context = context or task.get("context", {})
             memory_recall = bool(context.get("memory_recall", True))
+            # 审查 P0-5：任务级 deadline 须 ≥ 节点预算之和，否则 RPC 默认 8s 抢先杀真实 workflow。
+            task_deadline_ms = int(os.environ.get("UH_TASK_DEADLINE_MS", "120000"))
             result = await self.rpc.call(
                 "orchestration.run",
                 {"task_id": task_id, "content": content, "emit": emit, "resume": resume, "checkpoint_id": checkpoint_id},
                 trace_id=task["trace_id"],
+                deadline_ms=task_deadline_ms,
             )
             if result.payload.get("degraded"):
                 if result.payload.get("error_code") == "UH-CAP-5021" and result.payload.get("reason") != "module unavailable":
@@ -290,6 +345,9 @@ class TaskManager:
         checkpoint = orchestration.checkpoint(task_id, checkpoint_id) if orchestration is not None else None
         if checkpoint is None:
             return None
+        # 终态唯一性 guard：已完成/终态任务不可 resume（否则重发终态事件，污染回放游标）
+        if checkpoint.status == "completed" or task.get("status") in {"finished", "failed", "cancelled"}:
+            raise ResumeConflictError("任务已终态，不可 resume；重跑请创建新任务")
         task["queue"] = asyncio.Queue()
         task["status"] = "running"
         skipped_steps = len(checkpoint.completed_nodes)

@@ -118,7 +118,10 @@ def _alive(pid: int | None) -> bool:
     if not pid:
         return False
     if os.name == "nt":
-        out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid], capture_output=True, text=True).stdout
+        # 审查修复：中文 Windows tasklist 输出为 GBK，text=True 按 UTF-8 解码会崩；
+        # 取字节后容错解码（PID 为 ASCII 数字，不受编码影响）。
+        raw = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid], capture_output=True).stdout
+        out = raw.decode("utf-8", errors="replace")
         return str(pid) in out
     try:
         os.kill(pid, 0)
