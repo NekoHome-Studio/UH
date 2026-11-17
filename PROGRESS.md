@@ -1,7 +1,7 @@
 # UH! 执行进度
 
 > 任务基线：uh-issues/（39 个 Issue，含新增 M1-9）· 计划 20 周 · 本文档随执行更新
-> 当前阶段：M1 能力期进行中（M1-1 内部协议完成，tag contract-internal-v1；#13 关闭）
+> 当前阶段：M1 能力期完成（2026-11-17，9/9 任务关闭，111/111 测试，三冻结 tag）→ 待进入 M2 插件期
 > 上游基线：docs/source/《Ultra-Harness技术文档_整合版_v3（润色校对）.docx》（2026-11-14 切换，v0.1.0 架构文档保留对照）
 
 ## 状态总览
@@ -29,6 +29,7 @@
 | M1-6 | 错误码响应包裹（统一+幂等+分页） | 已完成 · Codex 实现 DSH 审 | main.py 包裹 + 6 测试，90/90 |
 | M1-9 | 事件字典冻结+映射+UI 状态机 | 已完成 · 冻结 contract-events-v1 | event_mapping.py + state-machine.js + 6 测试，96/96 |
 | M1-7 | WebSocket 事件流（回放+终态+SEC-04） | 已完成 · Codex 实现 DSH 审 | WS + 6 测试，102/102 |
+| M1-8 | 高危工具确认（token 防重放+审计） | 已完成 · DSH 实现 | confirmation.py + 9 测试，111/111 |
 
 ## 执行日志
 
@@ -188,5 +189,24 @@
 - DSH 审 subscribe 竞态安全/终态/窗口/归属 + 门禁 102/102；commit a2a0962；关闭 #19
 - 测试加固：_SlowLLM 时序裕量（慢盘终态保证竞态）
 
+### 2026-11-17 · M1-8 高危确认完成（DSH 直做，M1 收官）
+- kernel/confirmation.py 一次性 token 防重放+任务绑定+TTL+审计；MCPHost 确认门（拒绝不执行）；TaskManager pending_confirmation+事件；REST/CLI 确认；9 测试
+- 门禁 111/111；commit fe759a3；关闭 #20
+
+## M1 验收汇总（能力期出口）
+| 能力 | 任务 | 状态 |
+|---|---|---|
+| 内部协议（信封/总线/RPC/降级/隔离） | M1-1 | ✅ contract-internal-v1 |
+| MCP Host（list/call/超时/截断/幂等） | M1-2 | ✅ |
+| 检索 MCP Server（RAG+防注入+CAP-3001） | M1-3 | ✅ ADR-001 |
+| LangGraph 编排（Checkpoint+resume+deadline） | M1-4 | ✅ |
+| 长期记忆（L2/L3 分级+加密+无痕+purge） | M1-5 | ✅ |
+| 响应包裹（统一+幂等+分页） | M1-6 | ✅ |
+| WebSocket（18 事件+回放+终态+SEC-04） | M1-7 | ✅ |
+| 高危确认（token 防重放+审计+拒执） | M1-8 | ✅ |
+| 事件字典（映射+UI 状态机+CI） | M1-9 | ✅ contract-events-v1 |
+
+测试 111/111（本地+服务器），verify-all 6 项全绿；冻结 tag contract-v0.1.0 / contract-internal-v1 / contract-events-v1。
+
 ## 下一步
-M1-8 高危确认（#20，M1 最后一块：pending_confirmation+confirmation_token+审计）。M1 进度 8/9。可派 Codex（B 路径）或 DSH 直做。
+M2 插件期：M2-1 插件 SDK/manifest（#22 起，基于 contract-internal-v1 稳定协议）→ 沙箱/钩子/插件加载。可派 Codex（B 路径）或 DSH 直做。
