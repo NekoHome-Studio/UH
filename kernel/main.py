@@ -186,7 +186,7 @@ def create_app() -> FastAPI:
     app.state.rpc.register("retrieval.search", _retrieval_cap, storage={"retrieval"})
     app.state.rpc.register("orchestration.run", _orchestration_cap, storage={"orchestration"})
     app.state.confirmations = ConfirmationManager()
-    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory, app.state.confirmations)
+    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory, app.state.confirmations, bus=app.state.bus)
 
     @app.on_event("startup")
     async def register_retrieval_tools() -> None:

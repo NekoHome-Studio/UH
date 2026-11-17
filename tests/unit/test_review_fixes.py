@@ -150,6 +150,34 @@ def test_idempotency_key_bound_to_body():
         assert a2["task_id"] == a["task_id"]  # 同键同 body 回放
 
 
+# --- bus→task 桥：tool.call/result 真实发射 ---
+def test_tool_events_emitted_via_bus_bridge():
+    from kernel.protocol import EventBus
+    from kernel.mcp import MCPHost, InProcessTransport
+    async def run():
+        bus = EventBus()
+        tm = TaskManager(None, None, bus=bus)
+        executed = []
+        def handler(req):
+            m, rid = req.get("method"), req.get("id")
+            if m == "initialize":
+                return {"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}
+            if m == "tools/call":
+                executed.append(req["params"]["name"])
+                return {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "ok"}]}}
+            return {"jsonrpc": "2.0", "id": rid, "result": {}}
+        host = MCPHost(InProcessTransport(handler), bus=bus)
+        tid, _ = tm.create_tool_task("uh_ses_b1", "safe-tool", {}, "read-only", host)
+        for _ in range(300):
+            if tm.tasks[tid]["status"] in {"finished", "failed", "cancelled"}:
+                break
+            await asyncio.sleep(0.01)
+        return [e["event"]["event"] for e in tm.tasks[tid]["event_buffer"]], executed
+    evs, executed = asyncio.run(run())
+    assert executed == ["safe-tool"]
+    assert "tool.call" in evs and "tool.result" in evs
+
+
 # --- 路径白名单 ---
 def test_index_path_whitelist(tmp_path, monkeypatch):
     monkeypatch.setenv("UH_RETRIEVAL_ROOT", str(tmp_path))

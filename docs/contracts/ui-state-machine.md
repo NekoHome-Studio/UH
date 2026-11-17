@@ -1,6 +1,6 @@
 # P0-3 契约：UI 状态机（事件驱动 Agent Status）
 
-> 版本：v0.1.0（契约冻结候选）· 状态：needs-review
+> 版本：v0.1.0（契约已冻结）· 状态：frozen（MS-0 评审通过 2026-11-15，tag contract-v0.1.0；只增不改）
 > 关联：events.md（18 事件）、task-flow.md（终态保证）· 实装：M1-9（Web 接入）、M3-6（Desktop 共用）
 > 原则：前端只消费事件、按表迁移状态，不自己推断（Coopanion"事件驱动 UI"同款思路）。
 

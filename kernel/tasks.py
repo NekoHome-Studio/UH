@@ -35,7 +35,7 @@ class TaskManager:
     REPLAY_WINDOW_SECONDS = 5 * 60
     TERMINAL_EVENTS = frozenset({"task.finished", "task.failed", "task.cancelled"})
 
-    def __init__(self, llm: Any, memory: Any, rpc: Any = None, orchestration: Any = None, long_term_memory: Any = None, confirmations: Any = None):
+    def __init__(self, llm: Any, memory: Any, rpc: Any = None, orchestration: Any = None, long_term_memory: Any = None, confirmations: Any = None, bus: Any = None):
         self.llm = llm
         self.memory = memory
         self.rpc = rpc
@@ -45,6 +45,24 @@ class TaskManager:
         self._confirm_futures: dict[str, asyncio.Future] = {}
         self.tasks: dict[str, dict] = {}
         self.event_mapper = EventMapper()
+        self.bus = bus
+        if bus is not None:
+            self._attach_bus(bus)
+
+    def _attach_bus(self, bus: Any) -> None:
+        """bus→task 事件桥（审查 P1-4）：任务关联的内部工具事件映射进任务外部流，
+        使 tool.call/tool.result 拥有真实运行时发射器（而非仅 schema fixture）。"""
+        async def handler(env: Envelope) -> None:
+            tid = env.payload.get("task_id")
+            task = self.tasks.get(tid) if tid else None
+            if task is None:
+                return
+            external = {"mcp.tool.call": "tool.call", "mcp.tool.result": "tool.result"}.get(env.action)
+            if external is None:
+                return
+            payload = {k: v for k, v in env.payload.items() if k != "task_id"}
+            await self._emit(task, external, payload)
+        bus.subscribe("mcp.tool.*", handler)
 
     @staticmethod
     def _entry_recorded_at(entry: dict[str, Any]) -> float:
@@ -142,7 +160,7 @@ class TaskManager:
                 return decision
 
             try:
-                result = await host.call_tool(tool_name, arguments, risk_level=risk_level, confirm=confirm_cb, trace_id=t["trace_id"])
+                result = await host.call_tool(tool_name, arguments, risk_level=risk_level, confirm=confirm_cb, trace_id=t["trace_id"], task_id=task_id)
                 await self._emit(t, "task.finished", {"final_result": {"content": str(result.get("content", result))}, "duration_ms": 0})
             except MCPError as exc:
                 if exc.code == "UH-USR-1002":
@@ -285,11 +303,11 @@ class TaskManager:
                 await self._emit(t, "step.finished", {"step_id": "st_1", "module": "llm", "status": "done", "duration_ms": 0})
                 await self._emit(t, "task.finished", {"final_result": {"content": answer}, "duration_ms": 0})
             except LLMError as e:
+                # 审查 P1-5：step.started 须配对 step.failed，前端阶段条才不卡 running
+                await self._emit(t, "step.failed", {"step_id": "st_1", "module": "llm", "error": {"code": e.code, "message": e.message, "retryable": e.retryable}})
                 await self._emit(t, "task.failed", {"error": {"code": e.code, "message": e.message, "retryable": e.retryable}})
             except Exception as exc:
-                # Preserve the terminal-event guarantee when a non-LLM step
-                # fails unexpectedly.  The event mapper still validates the
-                # resulting envelope before it is retained or broadcast.
+                await self._emit(t, "step.failed", {"step_id": "st_1", "module": "llm", "error": {"code": "UH-KRN-5001", "message": "任务执行失败", "retryable": False}})
                 await self._emit(t, "task.failed", {"error": {"code": "UH-KRN-5001", "message": "任务执行失败", "retryable": False}})
             finally:
                 await q.put(None)

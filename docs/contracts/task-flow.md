@@ -1,6 +1,6 @@
 # P0-3 契约：REST→WS 任务流闭环
 
-> 版本：v0.1.0（契约冻结候选）· 状态：needs-review
+> 版本：v0.1.0（契约已冻结）· 状态：frozen（MS-0 评审通过 2026-11-15，tag contract-v0.1.0；只增不改）
 > 基线：v3 整合版 §6.3.1 / §6.3.2 / §6.4（L456-575）· 关联：errors.md（P0-1）、events.md / events.schema.json（事件字典）、ui-state-machine.md
 > 范围：POST messages 响应定义、WS 连接/鉴权/重连、任务终态、确认与取消/恢复端点、回放回退。
 

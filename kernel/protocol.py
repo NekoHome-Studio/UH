@@ -89,6 +89,11 @@ class StorageGuard:
         if namespace not in self._owned.get(module, set()):
             raise PermissionError("模块 %s 无权访问存储 %s（UH-KRN-2010）" % (module, namespace))
 
+    def authorize(self, module: str) -> None:
+        """RPC 调度前的生产校验点（审查 P1-8）：模块仅可访问自身声明的命名空间。"""
+        for ns in self._owned.get(module, set()):
+            self.check(module, ns)
+
 
 class CapabilityRegistry:
     """内部 RPC：能力模块注册 handler，内核按 action 调用，超时/不可用降级。"""
@@ -125,6 +130,7 @@ class CapabilityRegistry:
         if handler is None or not self._available.get(action, False):
             await self.bus.publish("capability.module.degraded", {"action": action, "reason": "unavailable"}, trace_id=trace_id)
             return self._degraded(req, "module unavailable")
+        self.guard.authorize(action)  # 存储隔离生产校验点
         try:
             resp = await asyncio.wait_for(handler(req), timeout=deadline_ms / 1000.0)
             return resp

@@ -1,6 +1,6 @@
 # UH! 事件字典 · 唯一事实源（Event Dictionary）
 
-> 版本：v0.1.0（契约冻结候选）· 状态：needs-review · 对应任务：P0-3（扩展）→ M1-9 冻结
+> 版本：v0.1.0（契约已冻结）· 状态：frozen（MS-0 评审通过 2026-11-15；事件字典 M1-9 冻结 tag contract-events-v1）· 只增不改
 > 基线：v3 整合版 §5.4 / §6.4 / §6.6 / §9.8 · 关联：task-flow.md、events.schema.json、ui-state-machine.md、errors.md
 > 效力：评审通过后，内部事件总线、WS 推送、钩子插件、审计、前端状态机一律以本文件为准；事件散落在 5.4/6.4/6.6/9.8 的局面就此终结。
 

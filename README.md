@@ -1,7 +1,7 @@
 # UH!（Ultra Harness）
 
 > 集百家之长，做用户之尚 —— 个人 AI Agent 运行底座
-> 当前阶段：v0.1.0 · MS-0 契约冻结周（W1）· 计划基线 20 周
+> 当前阶段：v0.1.0 · M1 能力期完成（9/9）+ 审查修复 · 计划基线 20 周
 
 本仓库当前承载 **契约与任务基线**：架构文档、机器可读契约、39 个 GitHub Issue 交付包与执行进度。代码实装按里程碑推进（M0 骨架 → M1 能力 → M2 插件 → M3 生产）。
 
@@ -41,4 +41,6 @@ REPO=NekoHome-Studio/UH bash uh-issues/create-issues.sh
 
 ## 下一步
 
-P0-4 沙箱分期与平台矩阵 → P0-5 部署暴露面与 RBAC → P0-6 机器可读契约与图（OpenAPI/AsyncAPI）。
+M1 生产链路二次验收（REST 全局鉴权方案待定）→ M2 插件期：M2-1 插件 SDK/manifest（#22 起，基于 contract-internal-v1）→ 沙箱/钩子/插件加载。
+
+> 里程碑：MS-0 契约冻结（#1~#6）→ M0 骨架（#7~#12）→ M1 能力（#13~#21）均已完成；三模型审查修复见 docs/reviews/。冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0。

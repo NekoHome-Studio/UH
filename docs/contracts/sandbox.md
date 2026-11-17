@@ -1,6 +1,6 @@
 # P0-4 契约：沙箱分期与平台矩阵
 
-> 版本：v0.1.0（契约冻结候选）· 状态：needs-review（内核负责人评审）
+> 版本：v0.1.0（契约已冻结）· 状态：frozen（MS-0 评审通过 2026-11-15，tag contract-v0.1.0；只增不改）
 > 基线：v3 §5.5 / §9.3 / §10.2 / §8.8 · 关联：errors.md（KRN-2010 / CAP-5021）、manifest schema（network.allow_hosts / memory_limit_mb / timeout_ms）
 > 定位：§5.5 是**目标态**（M3 达成），§9.3 是**本期交付态**（M2 强制项）。本文件是两者的唯一展开事实源，Blocks M2-2 / M3-7。
 

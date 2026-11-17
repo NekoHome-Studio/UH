@@ -9,9 +9,11 @@
 - 架构：微内核 + 能力层（LlamaIndex/LangGraph/CrewAI/MCP）+ 记忆层，四层；本地优先、模块化可插拔、低占用渐进增强、可换肤、可观测。
 
 ## 2. 当前状态（随进度更新）
-- MS-0 契约冻结周已完成：tag contract-v0.1.0，GitHub #1~#6 关闭。
-- M0 骨架期进行中：M0-1 内核骨架（#7）、M0-2 规则路由（#8）已完成并部署。
-- 下一步：M0-3 LLM 封装（#9）/ M0-4 Redis 短期记忆（#10）。
+- MS-0 契约冻结：tag contract-v0.1.0，#1~#6 关闭；契约状态头已回写 frozen。
+- M0 骨架期完成（#7~#12）；M1 能力期完成（#13~#21，9/9）：内部协议/MCP/检索/编排/长期记忆/响应包裹/WS/高危确认/事件字典。
+- 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0。
+- M1 三模型审查（GPT-6/DeepSeek-V4-Flash/Hunyuan）后已修第一批+第二批（bus→task 桥/StorageGuard 接线/step.failed 配对/治理回写/CI 增 pytest）；详见 docs/reviews/。
+- 下一步：M1 生产链路二次验收（REST 全局鉴权待定方案）→ M2 插件期（M2-1 #22 起）。
 - 实时进度以 PROGRESS.md 为准；任务编号映射见 uh-issues/issue-map.csv（#1~#39）。
 
 ## 3. 事实源与阅读顺序
