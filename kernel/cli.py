@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 import webbrowser
 from pathlib import Path
 
@@ -214,6 +215,26 @@ def memory_export(args) -> int:
     return 0
 
 
+def confirm_task(args) -> int:
+    """M1-8：CLI 确认/拒绝高危工具（经 REST，与 UI 同等效力）。"""
+    port = args.port or 8080
+    decision = "approved" if args.approve else "rejected"
+    url = "http://%s:%d/api/v1/tasks/%s/confirm" % (args.host, port, args.task)
+    body = json.dumps({"confirmation_token": args.token, "decision": decision, "operator": args.operator}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=10) as r:
+            print(r.read().decode("utf-8"))
+            return 0
+    except urllib.error.HTTPError as exc:
+        print(exc.read().decode("utf-8"), file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="uh", description="UH! Ultra Harness CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -229,7 +250,18 @@ def main(argv=None) -> int:
     purge = memorysub.add_parser("purge", help="清理长期记忆")
     purge.add_argument("--before", help="清理此日期/时间之前的记忆")
     export = memorysub.add_parser("export", help="导出长期记忆")
+    confirm = sub.add_parser("confirm", help="高危工具确认（M1-8）")
+    confirm.add_argument("--task", required=True, help="任务 ID")
+    confirm.add_argument("--token", required=True, help="confirmation_token")
+    cg = confirm.add_mutually_exclusive_group(required=True)
+    cg.add_argument("--approve", action="store_true", help="批准执行")
+    cg.add_argument("--reject", action="store_true", help="拒绝执行")
+    confirm.add_argument("--operator", default="cli-user", help="确认人")
+    confirm.add_argument("--port", type=int)
+    confirm.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args(argv)
+    if args.cmd == "confirm":
+        return confirm_task(args)
     if args.cmd == "memory":
         if not getattr(args, "action", None):
             parser.print_help(); return 0

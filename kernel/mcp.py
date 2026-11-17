@@ -484,6 +484,7 @@ class MCPHost:
         max_retries: int | None = None,
         trace_id: str = "",
         call_id: str | None = None,
+        confirm: Any = None,
     ) -> dict[str, Any]:
         arguments = arguments or {}
         await self.connect()
@@ -497,6 +498,20 @@ class MCPHost:
                 "call_id": call_id, "tool_name": name, "args_summary": self._args_summary(arguments),
                 "risk_level": risk, "requires_confirmation": risk in {"write-host", "irreversible"},
             }, trace_id=trace_id, from_="mcp_host")
+        # M1-8 确认门：write-host/irreversible 执行前须人工确认；拒绝则不执行。
+        if confirm is not None and risk in {"write-host", "irreversible"}:
+            decision = confirm(name, risk, self._args_summary(arguments), call_id)
+            if asyncio.iscoroutine(decision):
+                decision = await decision
+            approved = decision.get("decision") if isinstance(decision, dict) else decision
+            if approved != "approved":
+                if self.bus:
+                    await self.bus.publish("mcp.tool.result", {
+                        "call_id": call_id, "tool_name": name, "status": "denied",
+                        "truncated": False, "content_preview": None,
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                    }, trace_id=trace_id, from_="mcp_host")
+                raise MCPError("UH-USR-1002", f"高危工具 {name} 确认被拒绝，未执行", retryable=False, detail={"module": "tool", "tool_name": name, "call_id": call_id})
         last_error: MCPError | None = None
         for attempt in range(retries + 1):
             try:

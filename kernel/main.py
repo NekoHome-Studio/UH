@@ -29,6 +29,7 @@ from .protocol import EventBus, CapabilityRegistry, StorageGuard, Envelope
 from .mcp import MCPHost, InProcessTransport, MCPError
 from .retrieval import RetrievalMCPServer
 from .orchestration import OrchestrationService, OrchestrationError
+from .confirmation import ConfirmationManager, ConfirmationError
 
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 _UI_STATE_MACHINE = Path(__file__).resolve().parent.parent / "ui" / "state-machine.js"
@@ -54,6 +55,19 @@ class MessageRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     checkpoint_id: str | None = None
+
+
+class ConfirmRequest(BaseModel):
+    confirmation_token: str
+    decision: str
+    operator: str = "user"
+
+
+class ToolTaskRequest(BaseModel):
+    session_id: str
+    tool_name: str
+    arguments: dict = {}
+    risk_level: str = "irreversible"
 
 
 def _error_payload(
@@ -165,7 +179,8 @@ def create_app() -> FastAPI:
     app.state.rpc.register("llm.generate", _llm_cap)
     app.state.rpc.register("retrieval.search", _retrieval_cap, storage={"retrieval"})
     app.state.rpc.register("orchestration.run", _orchestration_cap, storage={"orchestration"})
-    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory)
+    app.state.confirmations = ConfirmationManager()
+    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory, app.state.confirmations)
 
     @app.on_event("startup")
     async def register_retrieval_tools() -> None:
@@ -424,6 +439,31 @@ def create_app() -> FastAPI:
         if result is None:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task or checkpoint not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         return _envelope(result)
+
+    @app.post("/api/v1/tasks/{task_id}/confirm")
+    async def confirm_task(task_id: str, req: ConfirmRequest):
+        if app.state.tasks.status(task_id) is None:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
+        try:
+            resolved = app.state.tasks.resolve_confirmation(task_id, req.confirmation_token, req.decision, operator=req.operator)
+        except ConfirmationError as exc:
+            status = 403 if exc.code == "UH-USR-1002" else 400
+            return Response(content=json.dumps(_envelope(error=_error_payload(exc.code, exc.message, retryable=exc.retryable, detail=exc.detail)), ensure_ascii=False), status_code=status, media_type="application/json")
+        return _envelope({"call_id": resolved.call_id, "decision": resolved.decision, "operator": resolved.operator})
+
+    @app.post("/api/v1/dev/tool-task", status_code=202)
+    async def dev_tool_task(req: ToolTaskRequest):
+        # 开发/测试入口：经检索 MCP Host 调用高危工具，触发确认门。
+        task_id, trace_id = app.state.tasks.create_tool_task(req.session_id, req.tool_name, req.arguments, req.risk_level, app.state.retrieval_host)
+        return _envelope({"task_id": task_id, "trace_id": trace_id})
+
+    @app.get("/api/v1/dev/confirmations")
+    async def dev_confirmations(task_id: str | None = None):
+        if task_id:
+            items = [r.to_dict() for r in app.state.confirmations.pending_for_task(task_id)]
+        else:
+            items = [r.to_dict() for r in app.state.confirmations._requests.values()]
+        return _envelope({"confirmations": items, "audit": app.state.confirmations.audit})
 
     @app.post("/api/v1/dev/capability/{name}/toggle")
     async def toggle_cap(name: str, available: bool = True):

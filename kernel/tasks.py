@@ -18,6 +18,8 @@ from .orchestration import OrchestrationError
 from .router import classify
 from .event_mapping import EventMapper
 from .protocol import Envelope
+from .mcp import MCPError
+from .confirmation import ConfirmationManager
 
 
 def _now() -> str:
@@ -28,12 +30,14 @@ class TaskManager:
     REPLAY_WINDOW_SECONDS = 5 * 60
     TERMINAL_EVENTS = frozenset({"task.finished", "task.failed", "task.cancelled"})
 
-    def __init__(self, llm: Any, memory: Any, rpc: Any = None, orchestration: Any = None, long_term_memory: Any = None):
+    def __init__(self, llm: Any, memory: Any, rpc: Any = None, orchestration: Any = None, long_term_memory: Any = None, confirmations: Any = None):
         self.llm = llm
         self.memory = memory
         self.rpc = rpc
         self.orchestration = orchestration
         self.long_term_memory = long_term_memory
+        self.confirmations = confirmations or ConfirmationManager()
+        self._confirm_futures: dict[str, asyncio.Future] = {}
         self.tasks: dict[str, dict] = {}
         self.event_mapper = EventMapper()
 
@@ -79,6 +83,76 @@ class TaskManager:
         }
         asyncio.create_task(self._run(task_id, session_id, content, mode, dict(context or {})))
         return task_id, trace_id
+
+    def create_tool_task(
+        self,
+        session_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        risk_level: str,
+        host: Any,
+        *,
+        owner_client_id: str | None = None,
+        owner_token: str | None = None,
+    ) -> tuple[str, str]:
+        """M1-8：高危工具任务，执行前经人工确认门。"""
+        task_id = "uh_task_" + secrets.token_hex(16)
+        trace_id = tracing.new_trace_id()
+        event_buffer: list[dict[str, Any]] = []
+        self.tasks[task_id] = {
+            "task_id": task_id, "queue": asyncio.Queue(), "subscribers": set(),
+            "event_buffer": event_buffer, "events": event_buffer, "status": "running",
+            "session_id": session_id, "trace_id": trace_id, "seq": 0, "mode": "tool",
+            "context": {}, "owner_client_id": owner_client_id or session_id, "owner_token": owner_token,
+        }
+        asyncio.create_task(self._run_tool(task_id, session_id, tool_name, arguments, risk_level, host))
+        return task_id, trace_id
+
+    async def _run_tool(self, task_id: str, session_id: str, tool_name: str, arguments: dict[str, Any], risk_level: str, host: Any) -> None:
+        t = self.tasks[task_id]
+        q: asyncio.Queue = t["queue"]
+        with tracing.request_context(t["trace_id"]):
+            await self._emit(t, "task.created", {"session_id": session_id, "mode": "tool"})
+
+            async def confirm_cb(name: str, risk: str, summary: str, call_id: str) -> str:
+                req = self.confirmations.request(task_id, name, risk, summary, call_id)
+                t["status"] = "pending_confirmation"
+                fut: asyncio.Future = asyncio.get_running_loop().create_future()
+                self._confirm_futures[task_id] = fut
+                await self._emit(t, "task.confirmation_required", {
+                    "call_id": req.call_id, "tool_name": name, "risk_level": risk,
+                    "summary": summary, "confirmation_token": req.token, "expires_at": req.expires_at,
+                })
+                decision = await fut
+                await self._emit(t, "task.confirmation_resolved", {
+                    "call_id": req.call_id, "decision": decision,
+                    "resolved_by": "timeout" if req.operator == "timeout" else "user",
+                })
+                return decision
+
+            try:
+                result = await host.call_tool(tool_name, arguments, risk_level=risk_level, confirm=confirm_cb, trace_id=t["trace_id"])
+                await self._emit(t, "task.finished", {"final_result": {"content": str(result.get("content", result))}, "duration_ms": 0})
+            except MCPError as exc:
+                if exc.code == "UH-USR-1002":
+                    await self._emit(t, "task.cancelled", {
+                        "reason": "confirmation_rejected",
+                        "error": {"code": "UH-USR-1002", "message": exc.message, "retryable": False},
+                        "completed_steps": 0,
+                    })
+                else:
+                    await self._emit(t, "task.failed", {"error": exc.to_dict()})
+            finally:
+                self._confirm_futures.pop(task_id, None)
+                await q.put(None)
+
+    def resolve_confirmation(self, task_id: str, token: str, decision: str, operator: str = "user"):
+        """REST/CLI 确认入口：裁决令牌并唤醒等待中的任务。"""
+        req = self.confirmations.resolve(token, decision, operator=operator, task_id=task_id)
+        fut = self._confirm_futures.get(task_id)
+        if fut is not None and not fut.done():
+            fut.set_result(decision)
+        return req
 
     async def _emit(self, task: dict[str, Any], event: str, payload: dict[str, Any], *, span_id: str | None = None) -> dict[str, Any] | None:
         """Map, retain, and broadcast one external event.
