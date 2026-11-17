@@ -460,7 +460,10 @@ class MCPHost:
         manifest = manifest or self._manifests.get(name) or {}
         config = manifest.get("config") if isinstance(manifest.get("config"), dict) else {}
         timeout_ms = int(config.get("timeout_ms", self.timeout_ms))
-        risk = risk_level or manifest.get("risk_level") or (info.risk_level if info else None)
+        # 二审 GPT-6 P0 修复：风险级取调用方/manifest/工具发现三者最严重，禁止调用方降级绕过确认。
+        _RISK_ORDER = {"read-only": 0, "write-scoped": 1, "write-host": 2, "irreversible": 3}
+        _cands = [r for r in (risk_level, manifest.get("risk_level"), info.risk_level if info else None) if r in _RISK_ORDER]
+        risk = max(_cands, key=lambda r: _RISK_ORDER[r]) if _cands else None
         idem = idempotent if idempotent is not None else manifest.get("idempotent")
         if idem is None and info is not None:
             idem = info.idempotent
@@ -500,8 +503,10 @@ class MCPHost:
                 "risk_level": risk, "requires_confirmation": risk in {"write-host", "irreversible"},
                 "task_id": task_id,
             }, trace_id=trace_id, from_="mcp_host")
-        # M1-8 确认门：write-host/irreversible 执行前须人工确认；拒绝则不执行。
-        if confirm is not None and risk in {"write-host", "irreversible"}:
+        # M1-8 确认门 + 二审 N3 修复：高危工具 fail-closed——无确认通道一律拒绝（RPC 路径不可绕过）。
+        if risk in {"write-host", "irreversible"}:
+            if confirm is None:
+                raise MCPError("UH-USR-1002", f"高危工具 {name} 须经确认通道", retryable=False, detail={"module": "tool", "tool_name": name, "confirmation_required": True, "risk_level": risk})
             decision = confirm(name, risk, self._args_summary(arguments), call_id)
             if asyncio.iscoroutine(decision):
                 decision = await decision
@@ -513,7 +518,7 @@ class MCPHost:
                         "truncated": False, "content_preview": None,
                         "duration_ms": int((time.monotonic() - started) * 1000), "task_id": task_id,
                     }, trace_id=trace_id, from_="mcp_host")
-                raise MCPError("UH-USR-1002", f"高危工具 {name} 确认被拒绝，未执行", retryable=False, detail={"module": "tool", "tool_name": name, "call_id": call_id})
+                raise MCPError("UH-USR-1002", f"高危工具 {name} 确认被拒绝，未执行", retryable=False, detail={"module": "tool", "tool_name": name, "confirmation_required": True, "risk_level": risk, "call_id": call_id})
         last_error: MCPError | None = None
         for attempt in range(retries + 1):
             try:

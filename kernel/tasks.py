@@ -139,6 +139,7 @@ class TaskManager:
 
             async def confirm_cb(name: str, risk: str, summary: str, call_id: str) -> str:
                 req = self.confirmations.request(task_id, name, risk, summary, call_id)
+                t.pop("confirm_timeout", None)  # 二审 N9：每轮重置，防跨轮污染审计
                 t["status"] = "pending_confirmation"
                 fut: asyncio.Future = asyncio.get_running_loop().create_future()
                 self._confirm_futures[task_id] = fut
@@ -212,6 +213,11 @@ class TaskManager:
         runner = task.get("_runner")
         if runner is not None and not runner.done():
             runner.cancel()
+        # 二审 GPT-6：取消使 pending 确认令牌失效，防取消后仍可批准
+        self.confirmations.invalidate_task(task_id)
+        fut = self._confirm_futures.get(task_id)
+        if fut is not None and not fut.done():
+            fut.set_result("rejected")
         task["status"] = "cancelling"  # 非 running 避免 _emit 裁剪缓冲；_emit 置终态
         await self._emit(task, "task.cancelled", {"reason": reason, "completed_steps": completed})
         return {"task_id": task_id, "reason": reason, "completed_steps": completed}

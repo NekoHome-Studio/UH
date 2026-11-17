@@ -36,7 +36,7 @@ def test_capability_and_degraded_mappings():
     assert degraded["event"] == "task.degraded"
     assert failed["event"] == "step.failed"
     assert failed["payload"]["module"] == "langgraph"
-    assert failed["payload"]["error"]["code"] == "UH-CAP-4003"
+    assert failed["payload"]["error"]["code"] == "UH-CAP-4004"  # ADR-003 strict 默认
 
 
 def test_audit_only_event_does_not_create_external_id_gap():

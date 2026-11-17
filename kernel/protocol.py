@@ -137,7 +137,7 @@ class CapabilityRegistry:
         handler = self._handlers.get(action)
         if handler is None or not self._available.get(action, False):
             await self.bus.publish("capability.module.degraded", {"action": action, "reason": "unavailable"}, trace_id=trace_id)
-            return self._degraded(req, "module unavailable")
+            return self._degraded(req, "module unavailable", code=module_error_code())  # 二审：不可用≠超时(5021)}
         self.guard.authorize(action)  # 存储隔离生产校验点
         try:
             resp = await asyncio.wait_for(handler(req), timeout=deadline_ms / 1000.0)

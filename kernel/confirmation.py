@@ -131,6 +131,15 @@ class ConfirmationManager:
         self._audit(req)
         return req
 
+    def invalidate_task(self, task_id: str) -> None:
+        """取消任务时使 pending 确认令牌失效（二审 GPT-6：防取消后仍可批准）。"""
+        for req in self.pending_for_task(task_id):
+            req.status = "rejected"
+            req.decision = "rejected"
+            req.operator = "cancelled"
+            req.resolved_at = _iso(_now())
+            self._audit(req)
+
     def mark_timeout(self, req: ConfirmationRequest) -> ConfirmationRequest:
         """TTL 到期自动收敛（M1 审查修复）：标记 rejected/timeout 并审计，
         使 resolved_by=timeout 路径真实可达，任务不再永久挂起。"""

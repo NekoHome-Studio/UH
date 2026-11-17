@@ -41,7 +41,7 @@ for (const f of codeFiles) {
     else if (deprecatedCodes.includes(c) && !deprecatedAllowed(f)) depMisuse.push(f + ": " + c);
   }
 }
-check("1 错误码注册一致（13 有效 + 4 deprecated）", unknown.length === 0 && depMisuse.length === 0, "未知=" + unknown.length + " 误用=" + depMisuse.length + (unknown.length ? " " + unknown.slice(0,5).join("; ") : "") + (depMisuse.length ? " " + depMisuse.slice(0,5).join("; ") : ""));
+check("1 错误码注册一致（14 有效 + 4 deprecated）", unknown.length === 0 && depMisuse.length === 0, "未知=" + unknown.length + " 误用=" + depMisuse.length + (unknown.length ? " " + unknown.slice(0,5).join("; ") : "") + (depMisuse.length ? " " + depMisuse.slice(0,5).join("; ") : ""));
 
 // 2) 事件名：外部 18 + 内部登记，三源一致
 const asyncapi = yaml.load(read("docs/contracts/asyncapi.yaml"));

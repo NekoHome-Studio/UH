@@ -221,6 +221,11 @@ class LongTermMemory:
     ) -> LongTermEntry | None:
         if not memory_recall:
             return None
+        # 二审 GPT-6 P2：L3 不可被 privacy_level override 降级——自动分级命中 L3 一律拒入。
+        auto = self.classifier.classify(content)
+        if auto.level == PrivacyLevel.L3:
+            log_event(log, logging.WARNING, "memory.long_term.rejected", session_id=session_id, privacy_level="L3", reasons=list(auto.reasons))
+            return None
         classification = self.classifier.classify(content, override=privacy_level)
         if classification.level == PrivacyLevel.L3:
             log_event(log, logging.WARNING, "memory.long_term.rejected", session_id=session_id, privacy_level="L3", reasons=list(classification.reasons))

@@ -100,7 +100,7 @@ def test_idempotent_retries_but_non_idempotent_does_not():
 
     server.failures_before_success = 1
     with pytest.raises(MCPError):
-        run(host.call_tool("write-tool", risk_level="write-host"))
+        run(host.call_tool("write-tool", risk_level="write-host", confirm=lambda *a: "approved"))
     assert server.calls == 3
 
 

@@ -111,8 +111,11 @@ def _truthy(value: str | None) -> bool:
 
 
 def _dev_enabled() -> bool:
-    # dev 端点门禁（审查 P1-1）：生产设 UH_DEV_MODE=0 关闭；默认开发态开启。
-    return _truthy(os.environ.get("UH_DEV_MODE", "1"))
+    # 二审 N6/R5：dev 默认关闭，跟随 UH_LOCAL_MODE（本地开/生产关）；UH_DEV_MODE 显式覆盖。
+    explicit = os.environ.get("UH_DEV_MODE")
+    if explicit is not None:
+        return _truthy(explicit)
+    return _truthy(os.environ.get("UH_LOCAL_MODE"))
 
 
 def _bearer_token(value: str | None) -> str | None:
@@ -125,6 +128,7 @@ def _bearer_token(value: str | None) -> str | None:
 def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
     app.state.idempotency_cache = {}
+    app.state.idempotency_locks = {}
     app.state.plugins = []
     app.state.memory = create_short_term_memory()
     app.state.long_term_memory = create_long_term_memory()
@@ -232,14 +236,19 @@ def create_app() -> FastAPI:
             start = time.perf_counter()
             # REST bearerAuth（审查 B5，对齐 openapi bearerAuth）：本地单用户模式（UH_LOCAL_MODE 默认 1）豁免；
             # 生产设 UH_LOCAL_MODE=0 + UH_AUTH_REQUIRED=1 + UH_AUTH_TOKEN 启用。ops 端点不在 /api/v1 下，天然豁免。
-            auth_required = _truthy(os.environ.get("UH_AUTH_REQUIRED") or os.environ.get("UH_WS_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE", "1"))
-            if auth_required and request.url.path.startswith("/api/v1/"):
+            # 二审 N1/N2 修复：默认值与 WS 对齐（UH_LOCAL_MODE 无默认，单设 UH_AUTH_REQUIRED=1 即生效）；
+            # 鉴权覆盖所有业务端点含遗留别名（/memory/*、/plugins），仅 ops 与 UI 静态豁免。
+            auth_required = _truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
+            _exempt = request.url.path in {"/health", "/ready", "/metrics", "/", "/static/state-machine.js"}
+            if auth_required and not _exempt:
                 expected = os.environ.get("UH_AUTH_TOKEN") or os.environ.get("UH_WS_AUTH_TOKEN") or os.environ.get("UH_WS_TOKEN")
                 # 与 WS 一致：Bearer 头优先，亦接受 ?token= 查询参数（本地/测试便利）。
                 supplied = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
                 if not supplied or expected is None or not secrets.compare_digest(supplied, expected):
+                    _resp = _envelope(error=_error_payload("UH-USR-1001", "未认证"))
+                    _resp["meta"]["trace_id"] = trace_id  # 二审 R2：401 也必带 meta.trace_id
                     return Response(
-                        content=json.dumps(_envelope(error=_error_payload("UH-USR-1001", "未认证")), ensure_ascii=False),
+                        content=json.dumps(_resp, ensure_ascii=False),
                         status_code=401, media_type="application/json", headers={"X-Trace-Id": trace_id},
                     )
             idempotency_key = request.headers.get("Idempotency-Key") if request.method == "POST" else None
@@ -248,87 +257,98 @@ def create_app() -> FastAPI:
                 # 审查修复：幂等键绑定请求体哈希——同键不同 body 不得错误复用首次结果
                 req_body = await request.body()
                 body_hash = hashlib.sha256(req_body).hexdigest()[:16]
-                cache_key = (request.method, request.url.path, idempotency_key, body_hash)
-            is_replay = bool(cache_key and cache_key in app.state.idempotency_cache)
-            if is_replay:
-                cached = app.state.idempotency_cache[cache_key]
-                response = Response(
-                    content=cached["body"],
-                    status_code=cached["status_code"],
-                    headers=cached["headers"],
-                    media_type=cached["media_type"],
-                )
-            else:
-                try:
-                    response = await call_next(request)
-                except Exception as exc:
-                    log.exception("unhandled business exception", exc_info=exc)
+                # 二审 N5：多用户（鉴权）模式绑调用者身份防跨客户端复用；本地单用户模式不绑（cookie 中途设置会破坏同客户端回放）
+                caller = (request.cookies.get("uh_client_id") or request.headers.get("X-UH-Client-ID") or request.query_params.get("token") or "") if auth_required else ""
+                cache_key = (request.method, request.url.path, idempotency_key, body_hash, caller)
+            _idem_lock = app.state.idempotency_locks.setdefault(cache_key, asyncio.Lock()) if cache_key else None
+            if _idem_lock is not None:
+                await _idem_lock.acquire()
+            try:
+                is_replay = bool(cache_key and cache_key in app.state.idempotency_cache)
+                if is_replay:
+                    cached = app.state.idempotency_cache[cache_key]
                     response = Response(
-                        content=json.dumps(_envelope(
-                            error=_error_payload("UH-KRN-5001", "内核未捕获异常"),
-                        ), ensure_ascii=False),
-                        status_code=500,
-                        media_type="application/json",
+                        content=cached["body"],
+                        status_code=cached["status_code"],
+                        headers=cached["headers"],
+                        media_type=cached["media_type"],
                     )
-            latency_ms = round((time.perf_counter() - start) * 1000, 2)
-            log_event(log, logging.INFO, "request.finished", method=request.method, path=request.url.path, status=response.status_code, latency_ms=latency_ms)
-            content_type = response.headers.get("content-type", "")
-            is_ops = request.url.path in {"/health", "/ready", "/metrics"}
-            is_stream = "text/event-stream" in content_type or request.url.path.endswith("/stream")
-            # This hidden development probe predates the public API envelope and
-            # is kept raw for the existing router regression suite.
-            is_legacy_dev_probe = request.url.path == "/api/v1/dev/route" and response.status_code < 400
-            if not is_replay and not is_ops and not is_stream and not is_legacy_dev_probe and "application/json" in content_type:
-                body = getattr(response, "body", None)
-                if body is None and hasattr(response, "body_iterator"):
-                    chunks = [chunk async for chunk in response.body_iterator]
-                    body = b"".join(chunks)
-                try:
-                    payload = json.loads(body or b"null")
-                except (TypeError, json.JSONDecodeError):
-                    payload = None
-                if isinstance(payload, dict) and {"data", "meta", "error"}.issubset(payload):
-                    normalized = dict(payload)
-                    normalized["meta"] = dict(payload.get("meta") or {})
-                    normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
-                    if normalized["error"] is not None:
-                        normalized["error"] = _error_payload(
-                            normalized["error"].get("code", "UH-KRN-5001"),
-                            normalized["error"].get("message", "请求失败"),
-                            retryable=bool(normalized["error"].get("retryable", False)),
-                            retry_after_ms=int(normalized["error"].get("retry_after_ms") or 0),
-                            detail=normalized["error"].get("detail") or {},
-                        )
-                elif response.status_code >= 400:
-                    message = payload.get("detail", "请求失败") if isinstance(payload, dict) else "请求失败"
-                    normalized = _envelope(error=_error_for_status(response.status_code, str(message)))
-                    normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
                 else:
-                    normalized = _envelope(payload)
-                    normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
-                body = json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-                headers = {
-                    key: value for key, value in response.headers.items()
-                    if key.lower() not in {"content-length", "transfer-encoding", "content-type"}
-                }
-                response = Response(content=body, status_code=response.status_code, headers=headers, media_type="application/json")
-                if cache_key:
-                    app.state.idempotency_cache[cache_key] = {
-                        "body": body,
-                        "status_code": response.status_code,
-                        "headers": {**dict(response.headers), "X-Trace-Id": trace_id},
-                        "media_type": "application/json",
-                        "stored_at": time.time(),
+                    try:
+                        response = await call_next(request)
+                    except Exception as exc:
+                        log.exception("unhandled business exception", exc_info=exc)
+                        response = Response(
+                            content=json.dumps(_envelope(
+                                error=_error_payload("UH-KRN-5001", "内核未捕获异常"),
+                            ), ensure_ascii=False),
+                            status_code=500,
+                            media_type="application/json",
+                        )
+                latency_ms = round((time.perf_counter() - start) * 1000, 2)
+                log_event(log, logging.INFO, "request.finished", method=request.method, path=request.url.path, status=response.status_code, latency_ms=latency_ms)
+                content_type = response.headers.get("content-type", "")
+                is_ops = request.url.path in {"/health", "/ready", "/metrics"}
+                is_stream = "text/event-stream" in content_type or request.url.path.endswith("/stream")
+                # This hidden development probe predates the public API envelope and
+                # is kept raw for the existing router regression suite.
+                is_legacy_dev_probe = request.url.path == "/api/v1/dev/route" and response.status_code < 400
+                if not is_replay and not is_ops and not is_stream and not is_legacy_dev_probe and "application/json" in content_type:
+                    body = getattr(response, "body", None)
+                    if body is None and hasattr(response, "body_iterator"):
+                        chunks = [chunk async for chunk in response.body_iterator]
+                        body = b"".join(chunks)
+                    try:
+                        payload = json.loads(body or b"null")
+                    except (TypeError, json.JSONDecodeError):
+                        payload = None
+                    if isinstance(payload, dict) and {"data", "meta", "error"}.issubset(payload):
+                        normalized = dict(payload)
+                        normalized["meta"] = dict(payload.get("meta") or {})
+                        normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
+                        if normalized["error"] is not None:
+                            normalized["error"] = _error_payload(
+                                normalized["error"].get("code", "UH-KRN-5001"),
+                                normalized["error"].get("message", "请求失败"),
+                                retryable=bool(normalized["error"].get("retryable", False)),
+                                retry_after_ms=int(normalized["error"].get("retry_after_ms") or 0),
+                                detail=normalized["error"].get("detail") or {},
+                            )
+                    elif response.status_code >= 400:
+                        message = payload.get("detail", "请求失败") if isinstance(payload, dict) else "请求失败"
+                        normalized = _envelope(error=_error_for_status(response.status_code, str(message)))
+                        normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
+                    else:
+                        normalized = _envelope(payload)
+                        normalized["meta"]["trace_id"] = tracing.get_trace_id() or trace_id
+                    body = json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    headers = {
+                        key: value for key, value in response.headers.items()
+                        if key.lower() not in {"content-length", "transfer-encoding", "content-type"}
                     }
-                    # 审查修复：TTL + 容量上限，防进程内 dict 单调增长
-                    now = time.time()
-                    for k in [k for k, v in app.state.idempotency_cache.items() if now - v.get("stored_at", now) > 300]:
-                        app.state.idempotency_cache.pop(k, None)
-                    while len(app.state.idempotency_cache) > 1000:
-                        app.state.idempotency_cache.pop(next(iter(app.state.idempotency_cache)), None)
-            if not is_replay:
-                response.headers["X-Trace-Id"] = trace_id
-            return response
+                    response = Response(content=body, status_code=response.status_code, headers=headers, media_type="application/json")
+                    if cache_key:
+                        # 二审 N5：缓存头剔除 Set-Cookie，防回放泄漏首次调用者 client_id
+                        cached_headers = {k: v for k, v in {**dict(response.headers), "X-Trace-Id": trace_id}.items() if k.lower() != "set-cookie"}
+                        app.state.idempotency_cache[cache_key] = {
+                            "body": body,
+                            "status_code": response.status_code,
+                            "headers": cached_headers,
+                            "media_type": "application/json",
+                            "stored_at": time.time(),
+                        }
+                        # 审查修复：TTL + 容量上限，防进程内 dict 单调增长
+                        now = time.time()
+                        for k in [k for k, v in app.state.idempotency_cache.items() if now - v.get("stored_at", now) > 300]:
+                            app.state.idempotency_cache.pop(k, None)
+                        while len(app.state.idempotency_cache) > 1000:
+                            app.state.idempotency_cache.pop(next(iter(app.state.idempotency_cache)), None)
+                if not is_replay:
+                    response.headers["X-Trace-Id"] = trace_id
+                return response
+            finally:
+                if _idem_lock is not None:
+                    _idem_lock.release()
 
     @app.get("/health")
     async def health():
@@ -412,6 +432,8 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/dev/route", include_in_schema=False)
     async def dev_route(req: RouteRequest):
+        if not _dev_enabled():  # 二审 N6：dev_route 补门禁
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         # 开发/测试端点：M0-3 messages 端点落地后移除；不在公开 OpenAPI 契约内
         try:
             d = classify(req.content, req.mode)
@@ -456,21 +478,39 @@ def create_app() -> FastAPI:
         response.set_cookie("uh_client_id", client_id, httponly=True, samesite="lax")
         # 审查修复：stream_url 按契约 task-flow §1 返回 WS 句柄（F2 按 scheme 区分）；
         # sse_url 保留 M0 SSE 过渡通道。
-        ws_scheme = "wss" if request.url.scheme == "https" else "ws"
-        host = request.headers.get("host") or request.url.netloc
-        stream_url = ws_scheme + "://" + host + "/api/v1/stream?task_id=" + task_id
+        # 二审 N4 修复：不信任请求 Host 头（防注入）；用可信 UH_PUBLIC_BASE_URL，否则相对路径。
+        public_base = os.environ.get("UH_PUBLIC_BASE_URL", "").rstrip("/")
+        stream_url = (public_base + "/api/v1/stream?task_id=" + task_id) if public_base else ("/api/v1/stream?task_id=" + task_id)
         sse_url = "/api/v1/tasks/" + task_id + "/stream"
         return _envelope({"task_id": task_id, "stream_url": stream_url, "sse_url": sse_url, "trace_id": trace_id})
 
+    def _task_guard(request: Request, task_id: str):
+        # 二审 GPT-6 P1：多用户模式校验任务归属；本地单用户豁免。
+        if not (_truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))):
+            return None
+        if app.state.tasks.status(task_id) is None:
+            return None
+        token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
+        client_id = request.cookies.get("uh_client_id") or request.headers.get("X-UH-Client-ID")
+        if not app.state.tasks.owner_matches(task_id, client_id=client_id, token=token):
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "无权访问任务", detail={"resource": "task", "task_id": task_id})), ensure_ascii=False), status_code=403, media_type="application/json")
+        return None
+
     @app.get("/api/v1/tasks/{task_id}")
-    async def get_task(task_id: str):
+    async def get_task(task_id: str, request: Request):
+        g = _task_guard(request, task_id)
+        if g is not None:
+            return g
         st = app.state.tasks.status(task_id)
         if st is None:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         return _envelope(st)
 
     @app.post("/api/v1/tasks/{task_id}/resume")
-    async def resume_task(task_id: str, req: ResumeRequest | None = None):
+    async def resume_task(task_id: str, req: ResumeRequest | None = None, request: Request = None):
+        g = _task_guard(request, task_id)
+        if g is not None:
+            return g
         from .tasks import ResumeConflictError
         try:
             result = app.state.tasks.resume(task_id, req.checkpoint_id if req else None)
@@ -481,7 +521,10 @@ def create_app() -> FastAPI:
         return _envelope(result)
 
     @app.post("/api/v1/tasks/{task_id}/confirm")
-    async def confirm_task(task_id: str, req: ConfirmRequest):
+    async def confirm_task(task_id: str, req: ConfirmRequest, request: Request):
+        g = _task_guard(request, task_id)
+        if g is not None:
+            return g
         if app.state.tasks.status(task_id) is None:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         try:
@@ -492,14 +535,20 @@ def create_app() -> FastAPI:
         return _envelope({"call_id": resolved.call_id, "decision": resolved.decision, "operator": resolved.operator})
 
     @app.get("/api/v1/tasks/{task_id}/steps")
-    async def task_steps(task_id: str):
+    async def task_steps(task_id: str, request: Request):
+        g = _task_guard(request, task_id)
+        if g is not None:
+            return g
         steps = app.state.tasks.steps(task_id)
         if steps is None:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
-        return _envelope({"steps": steps})
+        return _envelope({"task_id": task_id, "steps": steps})  # 二审 R3：补 task_id 符 openapi
 
     @app.post("/api/v1/tasks/{task_id}/cancel")
-    async def cancel_task(task_id: str):
+    async def cancel_task(task_id: str, request: Request):
+        g = _task_guard(request, task_id)
+        if g is not None:
+            return g
         from .tasks import ResumeConflictError
         try:
             result = await app.state.tasks.cancel(task_id, reason="user_request")
@@ -507,7 +556,7 @@ def create_app() -> FastAPI:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", str(exc))), ensure_ascii=False), status_code=409, media_type="application/json")
         if result is None:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
-        return _envelope(result)
+        return _envelope({**result, "status": "cancelling"})  # 二审 R3：补 status 符 openapi CancelResult
 
     @app.post("/api/v1/dev/tool-task", status_code=202)
     async def dev_tool_task(req: ToolTaskRequest):
@@ -651,6 +700,10 @@ def create_app() -> FastAPI:
                             return
                         token = supplied
                         authenticated = True
+                        # 二审 N8：换 token 后重校已订阅任务归属，防 token B 续收任务 A 事件
+                        if subscriber is not None and active_task_id and not app.state.tasks.owner_matches(active_task_id, client_id=client_id, token=token):
+                            await close_error("UH-USR-1002", "无权订阅任务", 4403, task_id=active_task_id)
+                            return
                         if subscriber is None:
                             subscriber, closed = await attach(query_task_id, query_after)
                             if closed:

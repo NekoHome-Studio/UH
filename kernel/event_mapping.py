@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import tracing
-from .protocol import Envelope, validate_event_name
+from .protocol import Envelope, validate_event_name, module_error_code
 
 try:  # jsonschema 是项目开发/运行时依赖；导入失败时给出明确错误。
     from jsonschema import Draft7Validator
@@ -166,7 +166,7 @@ def _mapped_payload(external: str, source: Envelope) -> dict[str, Any]:
             payload = {key: payload[key] for key in ("step_id", "module", "status", "duration_ms") if key in payload}
         elif not isinstance(payload.get("error"), dict):
             message = str(payload.get("error") or "能力模块失败")
-            payload["error"] = {"code": "UH-CAP-4003", "message": message, "retryable": False}
+            payload["error"] = {"code": module_error_code(), "message": message, "retryable": False}
             payload = {key: payload[key] for key in ("step_id", "module", "error") if key in payload}
         else:
             payload = {key: payload[key] for key in ("step_id", "module", "error") if key in payload}
