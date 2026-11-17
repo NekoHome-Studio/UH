@@ -10,8 +10,10 @@ from kernel.main import create_app
 
 class _SlowLLM:
     async def stream_chat(self, _messages):
+        # 足够慢以保证重连落在流式期间（慢速服务器上 0.3s 会在重连前终态，
+        # 触发终态保证只回终态事件，使回放起点断言失效）。3s 留足时序裕量。
         for index in range(30):
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.1)
             yield f"d{index}"
 
 
