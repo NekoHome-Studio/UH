@@ -28,6 +28,7 @@
 | M1-5 | 长期记忆（分级+加密+无痕） | 已完成 · Codex 实现 DSH 审 | long_term_memory.py + 4 测试，84/84 |
 | M1-6 | 错误码响应包裹（统一+幂等+分页） | 已完成 · Codex 实现 DSH 审 | main.py 包裹 + 6 测试，90/90 |
 | M1-9 | 事件字典冻结+映射+UI 状态机 | 已完成 · 冻结 contract-events-v1 | event_mapping.py + state-machine.js + 6 测试，96/96 |
+| M1-7 | WebSocket 事件流（回放+终态+SEC-04） | 已完成 · Codex 实现 DSH 审 | WS + 6 测试，102/102 |
 
 ## 执行日志
 
@@ -182,5 +183,10 @@
 - briefs/0009-m1-7-websocket-events.md 备好（WS 连接鉴权+18 事件经 EventMapper+after_event_id 回放+终态保证+5min 窗口回退 4408+SEC-04 归属 4403+UI 切 WS）
 - 用户 GUI 发起，DSH 待审
 
+### 2026-11-17 · M1-7 WebSocket 完成（B 路径，前端完整实时体验）
+- Codex 实现 WS /api/v1/stream（鉴权归属+18 事件经 EventMapper+竞态安全回放+终态保证+5min 窗口 4408+SEC-04 4403）+ UI 切 WS；6 测试
+- DSH 审 subscribe 竞态安全/终态/窗口/归属 + 门禁 102/102；commit a2a0962；关闭 #19
+- 测试加固：_SlowLLM 时序裕量（慢盘终态保证竞态）
+
 ## 下一步
-M1-7 WS（#19，Codex 实现中）→ M1-8 高危确认（#20，M1 最后一块）。M1 进度 7/9。
+M1-8 高危确认（#20，M1 最后一块：pending_confirmation+confirmation_token+审计）。M1 进度 8/9。可派 Codex（B 路径）或 DSH 直做。
