@@ -228,5 +228,15 @@
 - 记忆 scope UH_MEMORY_SCOPE global/session + context.memory_scope 覆盖；写入恒标 session_id，scope 仅控召回过滤
 - 修订对照 revisions/ADR-003-错误码只增对照.md；3 双模式回归；129/129 本地+服务器
 
+### 2026-11-17 · 第三轮审查修复（二审绕过路径，commit be202ab，139/139+10 绕过回归）
+- 鉴权别名/默认值/401 trace_id、RPC 确认 fail-closed、风险级禁降级、Host 注入、幂等 Cookie/调用者/in-flight、dev 门禁默认关、L3 override、取消撤销 token、任务归属、WS 换 token 重校、计数回写
+- 每条配绕过路径回归（test_review3_fixes.py 10 用例）
+
+### 2026-11-17 · 二审剩余项收尾（6ef4303/e681b95/c4857d2，142/142+full 8/8）
+- StorageGuard 真实隔离（冲突检测+access 接入向量库）、取消闭合 step、ADR-003 error_mode 通道
+- P2：trace token reset/limit=0/坏 L2 隔离/日志脱敏/checkpoint_id 稳定/PG 告警
+- UI：确认弹窗+游标重连+超窗回退渲染+degraded 徽标+4401 正确报错+fetch 防护
+- openapi 409 Conflict 登记（只增）
+
 ## 下一步
-契约裁决项全清（ADR-001/002/003）。剩 P2 演进（checkpoint_id 稳定性/LangGraph 答案/内存 TTL/shutdown）不阻塞。M1 生产链路二次验收可做；M2 插件期按用户指示暂缓。
+二审项基本全清（剩 per-user 鉴权设计层面+极小项）。M1 具备独立第三方生产链路二次验收条件 → 验收通过后 M2（暂缓）。
