@@ -18,6 +18,7 @@ const check = (name, ok, detail, info = false) => {
   results.push({ name, ok, info });
   console.log((info ? "INFO" : ok ? "PASS" : "FAIL") + "  " + name + (detail ? "  | " + detail : ""));
 };
+const childError = (error) => String(error?.stderr || error?.stdout || error?.message || "").trim().slice(0, 400);
 const ensure = (pkgs) => {
   fs.mkdirSync(DEPS, { recursive: true });
   const missing = pkgs.filter(p => !fs.existsSync(path.join(DEPS, "node_modules", p)));
@@ -69,7 +70,7 @@ try {
   if (!rejected(unknownExternal) || !rejected(badInternal)) throw new Error("negative probe unexpectedly accepted");
   check("B2 运行时映射双向校验 + ADR-002 三段命名", true, "push/subscribe negative probe");
 } catch (e) {
-  check("B2 运行时映射双向校验 + ADR-002 三段命名", false, String(e.stdout || e.message).slice(0, 200));
+  check("B2 运行时映射双向校验 + ADR-002 三段命名", false, childError(e));
 }
 
 // C. 交叉一致性预检（8 类）
@@ -77,7 +78,7 @@ try {
   execSync("node " + JSON.stringify(path.join(ROOT, "scripts/review-precheck.mjs")), { cwd: ROOT, env: { ...process.env, YAML_PATH: path.join(DEPS, "node_modules", "js-yaml") }, stdio: "pipe" });
   check("C 交叉一致性预检（8 类）", true, "详见 scripts/review-precheck.mjs 输出");
 } catch (e) {
-  check("C 交叉一致性预检（8 类）", false, String(e.stdout || e.message).slice(0, 200));
+  check("C 交叉一致性预检（8 类）", false, childError(e));
 }
 
 // D. OpenAPI 端点覆盖（19 操作）
@@ -101,7 +102,7 @@ if (FULL) {
   try {
     const out = execSync("npx --yes @apidevtools/swagger-cli validate docs/contracts/openapi.yaml", { cwd: ROOT, env: { ...process.env, CI: "true" }, stdio: "pipe" }).toString();
     check("F swagger-cli validate（OpenAPI 3.1）", /valid/.test(out), out.trim().split("\n").pop());
-  } catch (e) { check("F swagger-cli validate", false, String(e.stdout || e.message).slice(0, 200)); }
+  } catch (e) { check("F swagger-cli validate", false, childError(e)); }
   // G. AsyncAPI 官方 parser
   try {
     const req2 = ensure(["@asyncapi/parser"]);
@@ -109,7 +110,7 @@ if (FULL) {
     const { document, diagnostics } = await new Parser().parse(read("docs/contracts/asyncapi.yaml"));
     const errs = (diagnostics || []).filter(d => d.severity === 0 || d.severity === "error");
     check("G @asyncapi/parser（AsyncAPI 2.6）", !!document && errs.length === 0, "errors=" + errs.length + " version=" + (document && document.version()));
-  } catch (e) { check("G @asyncapi/parser", false, String(e.message).slice(0, 200)); }
+  } catch (e) { check("G @asyncapi/parser", false, childError(e)); }
 }
 if (REMOTE) {
   try {

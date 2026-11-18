@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -31,6 +33,8 @@ from .mcp import MCPHost, InProcessTransport, MCPError
 from .retrieval import RetrievalMCPServer
 from .orchestration import OrchestrationService, OrchestrationError
 from .confirmation import ConfirmationManager, ConfirmationError
+from .plugins import PluginDriver, PluginError
+from .sandbox import SandboxRunner
 
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 _UI_STATE_MACHINE = Path(__file__).resolve().parent.parent / "ui" / "state-machine.js"
@@ -69,6 +73,15 @@ class ToolTaskRequest(BaseModel):
     tool_name: str
     arguments: dict = {}
     risk_level: str = "irreversible"
+
+
+class InstallRequest(BaseModel):
+    source: str
+    no_verify: bool = False
+
+
+class PluginConfigRequest(BaseModel):
+    config: dict = {}
 
 
 def _error_payload(
@@ -133,6 +146,65 @@ def _read_auth_token() -> str | None:
     return None
 
 
+def _read_client_identity_secret() -> bytes:
+    """Return a server-only key used to bind client identities.
+
+    ``client_id`` is transported by browsers in an HttpOnly cookie and by SDKs
+    in an explicit header/query parameter.  The value is signed so a caller
+    cannot replace its identity with another task owner's raw session ID.
+    """
+    raw = os.environ.get("UH_CLIENT_ID_SECRET")
+    if raw:
+        return hashlib.sha256(raw.encode("utf-8")).digest()
+    path = os.environ.get("UH_CLIENT_ID_SECRET_FILE")
+    if path:
+        try:
+            value = Path(path).read_bytes().strip()
+            if value:
+                return hashlib.sha256(value).digest()
+        except OSError:
+            pass
+    # Tasks are in-memory today.  A process-local key is therefore sufficient
+    # until a persistent task store introduces a stable deployment secret.
+    return secrets.token_bytes(32)
+
+
+def _issue_client_identity(client_id: str, secret: bytes) -> str:
+    payload = client_id.encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signature = hmac.new(secret, payload, hashlib.sha256).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+    return f"uhcid1.{encoded}.{encoded_signature}"
+
+
+def _verify_client_identity(value: str | None, secret: bytes, *, strict: bool) -> str | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw.startswith("uhcid1."):
+        return None if strict else raw
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        supplied = base64.urlsafe_b64decode(parts[2] + "=" * (-len(parts[2]) % 4))
+    except (ValueError, UnicodeEncodeError):
+        return None
+    expected = hmac.new(secret, payload, hashlib.sha256).digest()
+    if not hmac.compare_digest(supplied, expected):
+        return None
+    try:
+        client_id = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return client_id or None
+
+
+def _strict_client_identity() -> bool:
+    return _truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
+
+
 def _bearer_token(value: str | None) -> str | None:
     if not value:
         return None
@@ -144,8 +216,12 @@ def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
     app.state.idempotency_cache = {}
     app.state.sessions = set()  # 三审 P1-6：会话注册表（存在性校验）
+    app.state.session_owners = {}
     app.state.idempotency_locks = {}
-    app.state.plugins = []
+    app.state.plugin_driver = PluginDriver(sandbox_runner=SandboxRunner())
+    # Compatibility snapshot for callers that inspected the M1 placeholder.
+    app.state.plugins = app.state.plugin_driver.list()
+    app.state.client_identity_secret = _read_client_identity_secret()
     app.state.memory = create_short_term_memory()
     app.state.bus = EventBus()
     app.state.guard = StorageGuard()
@@ -209,6 +285,38 @@ def create_app() -> FastAPI:
     app.state.rpc.register("orchestration.run", _orchestration_cap, storage={"orchestration"})
     app.state.confirmations = ConfirmationManager()
     app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory, app.state.confirmations, bus=app.state.bus)
+
+    def _request_client_id(request: Request) -> str | None:
+        strict = _strict_client_identity()
+        # A signed explicit header wins over a stale browser cookie. Invalid
+        # candidates are skipped so a bad SDK header cannot hide a valid cookie.
+        candidates = (
+            request.headers.get("X-UH-Client-ID"),
+            request.cookies.get("uh_client_id"),
+            request.query_params.get("client_id"),
+        )
+        for candidate in candidates:
+            resolved = _verify_client_identity(candidate, app.state.client_identity_secret, strict=strict)
+            if resolved:
+                return resolved
+        return None
+
+    def _websocket_client_id(websocket: WebSocket, *, message: dict | None = None) -> str | None:
+        strict = _strict_client_identity()
+        candidates = (
+            (message or {}).get("client_id"),
+            websocket.headers.get("X-UH-Client-ID"),
+            websocket.cookies.get("uh_client_id"),
+            websocket.query_params.get("client_id"),
+        )
+        for candidate in candidates:
+            resolved = _verify_client_identity(candidate, app.state.client_identity_secret, strict=strict)
+            if resolved:
+                return resolved
+        return None
+
+    def _client_cookie_value(client_id: str) -> str:
+        return _issue_client_identity(client_id, app.state.client_identity_secret)
 
     @app.on_event("startup")
     async def register_retrieval_tools() -> None:
@@ -276,7 +384,7 @@ def create_app() -> FastAPI:
                 req_body = await request.body()
                 body_hash = hashlib.sha256(req_body).hexdigest()[:16]
                 # 二审 N5：多用户（鉴权）模式绑调用者身份防跨客户端复用；本地单用户模式不绑（cookie 中途设置会破坏同客户端回放）
-                caller = (request.headers.get("X-UH-Client-ID") or request.cookies.get("uh_client_id") or request.query_params.get("token") or "") if auth_required else ""  # 四审 P1-5：header 优先稳 caller
+                caller = (_request_client_id(request) or request.query_params.get("token") or "") if auth_required else ""  # 五审 N4：统一身份解析，避免 header/cookie 优先级漂移
                 cache_key = (request.method, request.url.path, idempotency_key, body_hash, caller)
             _idem_lock = app.state.idempotency_locks.setdefault(cache_key, asyncio.Lock()) if cache_key else None
             if _idem_lock is not None:
@@ -427,10 +535,48 @@ def create_app() -> FastAPI:
     @app.get("/plugins")
     @app.get("/api/v1/plugins")
     async def list_plugins(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
-        total = len(app.state.plugins)
+        all_plugins = app.state.plugin_driver.list()
+        total = len(all_plugins)
         start = (page - 1) * page_size
-        plugins = app.state.plugins[start:start + page_size]
+        plugins = all_plugins[start:start + page_size]
         return _envelope({"plugins": plugins, "total": total, "has_more": start + page_size < total})
+
+    def _plugin_error(exc: PluginError) -> Response:
+        return Response(
+            content=json.dumps(_envelope(error=exc.to_dict()), ensure_ascii=False),
+            status_code=exc.status_code,
+            media_type="application/json",
+        )
+
+    @app.post("/plugins", status_code=201)
+    @app.post("/api/v1/plugins", status_code=201)
+    async def install_plugin(req: InstallRequest):
+        try:
+            result = await app.state.plugin_driver.install(req.source, no_verify=req.no_verify)
+        except PluginError as exc:
+            return _plugin_error(exc)
+        app.state.plugins = app.state.plugin_driver.list()
+        return _envelope(result)
+
+    @app.delete("/plugins/{name}")
+    @app.delete("/api/v1/plugins/{name}")
+    async def uninstall_plugin(name: str):
+        try:
+            result = await app.state.plugin_driver.uninstall(name)
+        except PluginError as exc:
+            return _plugin_error(exc)
+        app.state.plugins = app.state.plugin_driver.list()
+        return _envelope(result)
+
+    @app.patch("/plugins/{name}/config")
+    @app.patch("/api/v1/plugins/{name}/config")
+    async def update_plugin_config(name: str, req: PluginConfigRequest | None = None):
+        try:
+            result = await app.state.plugin_driver.update_config(name, req.config if req else {})
+        except PluginError as exc:
+            return _plugin_error(exc)
+        app.state.plugins = app.state.plugin_driver.list()
+        return _envelope(result)
 
     @app.delete("/memory/long-term")
     @app.delete("/api/v1/memory/long-term")
@@ -477,19 +623,30 @@ def create_app() -> FastAPI:
         return FileResponse(_UI_STATE_MACHINE, media_type="application/javascript")
 
     @app.post("/api/v1/sessions", status_code=201)
-    async def create_session(response: Response):
+    async def create_session(response: Response, request: Request):
         sid = "uh_ses_" + secrets.token_hex(16)
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        # Local single-user mode keeps the historical session-scoped identity.
+        # Production mode may reuse an existing signed principal across sessions.
+        client_id = (_request_client_id(request) if _strict_client_identity() else None) or sid
         app.state.sessions.add(sid)
-        response.set_cookie("uh_client_id", sid, httponly=True, samesite="lax")
-        return _envelope({"session_id": sid, "status": "active", "created_at": now})
+        app.state.session_owners[sid] = client_id
+        response.set_cookie("uh_client_id", _client_cookie_value(client_id), httponly=True, samesite="lax")
+        return _envelope({"session_id": sid, "client_id": _client_cookie_value(client_id), "status": "active", "created_at": now})
 
     @app.post("/api/v1/sessions/{session_id}/messages", status_code=202)
     async def send_message(session_id: str, req: MessageRequest, request: Request, response: Response):
         # 三审 P1-6：会话存在性校验（契约要求不存在会话 USR-1003）
         if session_id not in app.state.sessions:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})), ensure_ascii=False), status_code=404, media_type="application/json")
-        client_id = request.headers.get("X-UH-Client-ID") or request.cookies.get("uh_client_id") or session_id
+        strict_identity = _strict_client_identity()
+        client_id = _request_client_id(request)
+        if client_id is None and strict_identity:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "需要有效的 client_id 身份凭据")), ensure_ascii=False), status_code=403, media_type="application/json")
+        client_id = client_id or session_id
+        session_owner = app.state.session_owners.get(session_id)
+        if strict_identity and session_owner and client_id != session_owner:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "无权访问会话", detail={"resource": "session", "session_id": session_id})), ensure_ascii=False), status_code=403, media_type="application/json")
         owner_token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")  # query token 也设归属，与 WS 一致
         task_id, trace_id = app.state.tasks.create(
             session_id,
@@ -501,7 +658,7 @@ def create_app() -> FastAPI:
         )
         # Keep the local client identity available to the subsequent browser
         # WebSocket handshake when the session was supplied directly.
-        response.set_cookie("uh_client_id", client_id, httponly=True, samesite="lax")
+        response.set_cookie("uh_client_id", _client_cookie_value(client_id), httponly=True, samesite="lax")
         # 审查修复：stream_url 按契约 task-flow §1 返回 WS 句柄（F2 按 scheme 区分）；
         # sse_url 保留 M0 SSE 过渡通道。
         # 二审 N4 修复：不信任请求 Host 头（防注入）；用可信 UH_PUBLIC_BASE_URL，否则相对路径。
@@ -522,7 +679,7 @@ def create_app() -> FastAPI:
         if app.state.tasks.status(task_id) is None:
             return None
         token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
-        client_id = request.cookies.get("uh_client_id") or request.headers.get("X-UH-Client-ID")
+        client_id = _request_client_id(request)
         if not app.state.tasks.owner_matches(task_id, client_id=client_id, token=token):
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "无权访问任务", detail={"resource": "task", "task_id": task_id})), ensure_ascii=False), status_code=403, media_type="application/json")
         return None
@@ -594,7 +751,14 @@ def create_app() -> FastAPI:
         if not _dev_enabled():
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         # 与 send_message 一致：设归属（query token 也认），供 confirm/WS 归属校验
-        client_id = request.headers.get("X-UH-Client-ID") or request.cookies.get("uh_client_id") or req.session_id
+        strict_identity = _strict_client_identity()
+        client_id = _request_client_id(request)
+        if client_id is None and strict_identity:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "需要有效的 client_id 身份凭据")), ensure_ascii=False), status_code=403, media_type="application/json")
+        client_id = client_id or req.session_id
+        session_owner = app.state.session_owners.get(req.session_id)
+        if strict_identity and session_owner and client_id != session_owner:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "无权访问会话", detail={"resource": "session", "session_id": req.session_id})), ensure_ascii=False), status_code=403, media_type="application/json")
         owner_token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
         task_id, trace_id = app.state.tasks.create_tool_task(req.session_id, req.tool_name, req.arguments, req.risk_level, app.state.retrieval_host, owner_client_id=client_id, owner_token=owner_token)
         return _envelope({"task_id": task_id, "trace_id": trace_id, "sse_url": "/api/v1/tasks/" + task_id + "/stream"})
@@ -625,12 +789,11 @@ def create_app() -> FastAPI:
         g = _task_guard(request, task_id)  # 四审 P0-2：SSE 补归属守卫（此前唯一漏的任务端点）
         if g is not None:
             return g
+        if app.state.tasks.status(task_id) is None:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "task not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         async def gen():
-            try:
-                async for ev in app.state.tasks.stream(task_id):
-                    yield "data: " + json.dumps(ev, ensure_ascii=False) + "\n\n"
-            except KeyError:
-                yield "data: " + json.dumps({"event": "error", "payload": {"error": {"code": "UH-USR-1003", "message": "task not found"}}}) + "\n\n"
+            async for ev in app.state.tasks.stream(task_id):
+                yield "data: " + json.dumps(ev, ensure_ascii=False) + "\n\n"
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     @app.websocket("/api/v1/stream")
@@ -667,7 +830,7 @@ def create_app() -> FastAPI:
             await websocket.close(code=4401)
             return
 
-        client_id = params.get("client_id") or websocket.headers.get("X-UH-Client-ID") or websocket.cookies.get("uh_client_id")
+        client_id = _websocket_client_id(websocket)
         subscriber = None
         active_task_id = None
 
@@ -737,6 +900,7 @@ def create_app() -> FastAPI:
                             return
                         token = supplied
                         authenticated = True
+                        client_id = _websocket_client_id(websocket, message=message) or client_id
                         # 二审 N8：换 token 后重校已订阅任务归属，防 token B 续收任务 A 事件
                         if subscriber is not None and active_task_id and not app.state.tasks.owner_matches(active_task_id, client_id=client_id, token=token):
                             await close_error("UH-USR-1002", "无权订阅任务", 4403, task_id=active_task_id)
@@ -753,6 +917,7 @@ def create_app() -> FastAPI:
                             await close_error("UH-USR-1001", "未认证", 4401)
                             return
                         target = message.get("task_id") or query_task_id
+                        client_id = _websocket_client_id(websocket, message=message) or client_id
                         try:
                             cursor = int(message.get("after_event_id", message.get("last_event_id", 0)))
                             if cursor < 0:

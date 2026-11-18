@@ -31,6 +31,7 @@ POST /api/v1/sessions/{id}/messages（请求体见 v3 §6.3.1，支持 Idempoten
 连接：wss://<host>/api/v1/stream?task_id=<id>[&after_event_id=<n>]
 
 - 鉴权：Bearer token 经 query 参数 token 或首条 op:auth 消息携带；本地模式可关闭（§6.2）。
+- 生产归属：除 token 外，客户端须携带服务端签发的 `client_id` 身份凭据。凭据可经 HttpOnly `uh_client_id` Cookie、`X-UH-Client-ID` 请求头或 `client_id` 查询参数携带；服务端校验签名后才用于任务归属。未启用生产鉴权的本地模式可继续使用会话级兼容值。
 - 订阅：{ "op": "subscribe", "task_id": "...", "after_event_id": 0 }；after_event_id=0 表示从头播放。
 - 心跳：{ "op": "ping", "ts": <unix秒> } → 服务端 { "op": "pong", "ts": <unix秒> }。
 - 归属校验：订阅他人 task_id → 推送错误帧 { "op": "error", "error": { "code": "UH-USR-1002", ... } } 并关闭（close 4403）（SEC-04）。
@@ -50,6 +51,7 @@ POST /api/v1/sessions/{id}/messages（请求体见 v3 §6.3.1，支持 Idempoten
 - 所有服务端事件统一信封：event_id / event / version / task_id / trace_id / ts / payload（span_id 可选，审计反查），定义见 events.md §2。
 - 事件字典 18 个（5 类），只增不改；载荷 schema 见 events.schema.json。
 - 终态（决议 F4）：task.finished / task.failed / task.cancelled 三者必居其一且仅居其一，是任务的最后一个事件；终态事件必须送达（持久化至任务 TTL），终态后服务端主动 close 1000。
+- 终态回连：终态任务重连返回终态快照并 close 1000，不承诺按 `after_event_id` 重放已释放的 delta；完整结果以终态 `final_result.content` 为准。
 - 确认拒绝 → task.cancelled（reason=confirmation_rejected，error.code=UH-USR-1002），保留已完成步骤（对齐 M1-8 / events.md 决议 C5）。
 
 ## 4. 确认 / 取消 / 恢复端点（契约形状，M1-8 / M1-4 实装）

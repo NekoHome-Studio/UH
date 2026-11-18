@@ -11,8 +11,8 @@ servers:
       host:
         default: localhost:8080
     description: >-
-      query: task_id 必填；after_event_id 重连游标（last_event_id 兼容别名）；token 鉴权或首条 op:auth。关闭码 4401/4403/4404/4408/1000 见
-      task-flow.md §2
+      query: task_id 必填；after_event_id 重连游标（last_event_id 兼容别名）；token 鉴权或首条 op:auth；生产归属还需服务端签发的
+      client_id（Cookie、X-UH-Client-ID 或 query）。终态重连返回终态快照，不重放已释放 delta。关闭码 4401/4403/4404/4408/1000 见 task-flow.md §2
 channels:
   /api/v1/stream:
     subscribe:

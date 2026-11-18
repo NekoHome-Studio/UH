@@ -732,7 +732,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: 'Authorization: Bearer <token>；本地模式可关闭'
+      description: 'Authorization: Bearer <token>；本地模式可关闭。生产任务归属还需服务端签发的 client_id（HttpOnly Cookie、X-UH-Client-ID 或 query）'
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -865,6 +865,9 @@ components:
       properties:
         session_id:
           type: string
+        client_id:
+          type: string
+          description: 服务端签发的客户端归属凭据，生产模式通过 Cookie、X-UH-Client-ID 或 WebSocket query 携带
         status:
           enum:
             - active
