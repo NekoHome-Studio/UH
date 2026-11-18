@@ -238,5 +238,13 @@
 - UI：确认弹窗+游标重连+超窗回退渲染+degraded 徽标+4401 正确报错+fetch 防护
 - openapi 409 Conflict 登记（只增）
 
+### 2026-11-18 · 三审 + 第四轮修复（148/148+full 8/8）
+- 三审 verdict 分歧：GPT-6 不通过(6P1)/DeepSeek 有条件(4条件)/Hunyuan 有条件；总结+模型能力分析入库
+- 第四轮修 P1：测试卫生(存储隔离+reset竞态)、Chroma/LlamaIndex guard、resume runner写回、fail-closed补tool.result+span_id、session存在性、steps永久日志+duration_ms、stream_url wss、终态resume409、幂等锁表回收、UI按钮恢复；6 绕过回归
+
+### 2026-11-18 · P2/P3 收尾 + 跨机验收准备（e4b2347，148/148 full 8/8）
+- long_term 接 guard、/docs+openapi 鉴权豁免、dev token 全脱敏、aria-live、safety/yielded 预留标注（15/18 发射器口径诚实）、CI --full
+- 跨机连通验证（.14→.28 health/ready/openapi 通）；跨机验收指南 docs/reviews/2026-11-18-跨机验收指南.md
+
 ## 下一步
-二审项基本全清（剩 per-user 鉴权设计层面+极小项）。M1 具备独立第三方生产链路二次验收条件 → 验收通过后 M2（暂缓）。
+P2/P3 清完（剩 per-user 鉴权设计层面）。待跨机独立验收（指南就绪，生产鉴权模式 B）→ M1 生产可用 → M2（暂缓）。
