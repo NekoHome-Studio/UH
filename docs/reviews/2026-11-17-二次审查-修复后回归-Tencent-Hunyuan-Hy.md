@@ -1,26 +1,26 @@
 # UH! 二次审查报告（修复后回归 · 模型署名版）
 
-> **审查模型：Tencent Hunyuan Hy（腾讯混元 Hy）**
-> 运行产品：WorkBuddy（Agent 模式）
-> 审查时间：2026-11-17（22:11–22:25 GMT+8）
-> 审查基线：`main` 分支 commit **`6fd06ee`**（入库 M1 审查材料 + ADR-003 进度）
-> 对比基线：`41442bc`（上一轮审查对象）
-> 报告性质：**非契约、非规范文件**；不修改 `docs/contracts/` 冻结事实源
+> **审查模型：Tencent Hunyuan Hy（腾讯混元 Hy）**  
+> 运行产品：WorkBuddy（Agent 模式）  
+> 审查时间：2026-11-17（22:11–22:25 GMT+8）  
+> 审查基线：`main` 分支 commit **`6fd06ee`**（入库 M1 审查材料 + ADR-003 进度）  
+> 对比基线：`41442bc`（上一轮审查对象）  
+> 报告性质：**非契约、非规范文件**；不修改 `docs/contracts/` 冻结事实源  
 > 关联前报：`docs/reviews/2026-11-17-审查与实测报告.md`、`docs/reviews/2026-11-17-审查报告-Tencent-Hunyuan-Hy.md`（均针对 `41442bc`）
 
 ---
 
-## 0. 为什么有这份报告
+## 0. 为什么有这份报告N
 
 上次审查后，仓库连续出现五个修复/治理提交：
 
-| commit | 说明 |
-|---|---|
-| `ffff141` | WS 空 token 绕过、确认 TTL、dev 门禁、幂等、路径白名单、CLI 编码等（119/119 + 8 回归） |
+| commit    | 说明                                                                  |
+| --------- | ------------------------------------------------------------------- |
+| `ffff141` | WS 空 token 绕过、确认 TTL、dev 门禁、幂等、路径白名单、CLI 编码等（119/119 + 8 回归）        |
 | `2b1a6c1` | bus→task 事件桥、StorageGuard 接线、治理回写、CI 增 pytest + verify-all（120/120） |
-| `9bd9ef6` | REST bearerAuth：本地豁免 + ops 豁免 + query token 回退（126/126） |
-| `27e392a` | ADR-003 双模式 strict/legacy、记忆 scope global/session（129/129） |
-| `6fd06ee` | 入库三份独立审查、模型对比与修复回应 |
+| `9bd9ef6` | REST bearerAuth：本地豁免 + ops 豁免 + query token 回退（126/126）             |
+| `27e392a` | ADR-003 双模式 strict/legacy、记忆 scope global/session（129/129）          |
+| `6fd06ee` | 入库三份独立审查、模型对比与修复回应                                                  |
 
 **本报告全部实测均在 `6fd06ee` 上执行。** 上一轮报告只对 `41442bc` 有效。
 
@@ -45,16 +45,16 @@ CI 也已补 pytest 与 verify-all，触发路径纳入 `kernel/**`、`tests/**`
 
 ### 1.2 原问题复核矩阵
 
-| 原问题 | 当前判定 | 证据 |
-|---|---|---|
-| WS 空 token 绕过 | **已修** | `main.py:577` 要求 `expected_token is not None`；动态复测首帧为 `UH-USR-1001 未认证` |
-| WS 重订阅丢实时事件 | **已修** | `main.py:683-685` 重建 `queue_task`；动态复测收到 `delta 5`（大于回放上限 4） |
-| 路径穿越 | **已修（主入口）** | `retrieval.py:190-194` resolve + `is_relative_to`；动态复测返回“文档路径越界”，marker 不在索引文档中 |
-| 确认 TTL 死等 | **核心已修，有残留** | `confirmation.py:134-143` + `tasks.py:150` 自动超时；1.3s 后终态为 `failed`、future 释放；但 `confirm_timeout` 标志跨轮不重置 |
-| REST 全局无鉴权 | **部分修复** | 中间件已加（`main.py:235-244`），但 `UH_LOCAL_MODE` 默认 `"1"` 导致只设 `UH_AUTH_REQUIRED=1` 仍全开；非 `/api/v1` 别名绕过 |
-| dev 令牌泄露 | **部分修复** | 完整 token 已脱敏，但仍回显前 6 位；`dev_route` 漏 dev 门禁；`UH_DEV_MODE` 默认开 |
-| CLI 中文 Windows 编码 | **已修** | `cli.py:121-124` 改为字节 + `errors="replace"`；129/129 含该用例 |
-| CI 不跑 Python 门禁 | **已修** | `contracts.yml` 增加 pytest + verify-all；本地实测全绿 |
+| 原问题               | 当前判定         | 证据                                                                                                       |
+| ----------------- | ------------ | -------------------------------------------------------------------------------------------------------- |
+| WS 空 token 绕过     | **已修**       | `main.py:577` 要求 `expected_token is not None`；动态复测首帧为 `UH-USR-1001 未认证`                                  |
+| WS 重订阅丢实时事件       | **已修**       | `main.py:683-685` 重建 `queue_task`；动态复测收到 `delta 5`（大于回放上限 4）                                             |
+| 路径穿越              | **已修（主入口）**  | `retrieval.py:190-194` resolve + `is_relative_to`；动态复测返回“文档路径越界”，marker 不在索引文档中                          |
+| 确认 TTL 死等         | **核心已修，有残留** | `confirmation.py:134-143` + `tasks.py:150` 自动超时；1.3s 后终态为 `failed`、future 释放；但 `confirm_timeout` 标志跨轮不重置 |
+| REST 全局无鉴权        | **部分修复**     | 中间件已加（`main.py:235-244`），但 `UH_LOCAL_MODE` 默认 `"1"` 导致只设 `UH_AUTH_REQUIRED=1` 仍全开；非 `/api/v1` 别名绕过       |
+| dev 令牌泄露          | **部分修复**     | 完整 token 已脱敏，但仍回显前 6 位；`dev_route` 漏 dev 门禁；`UH_DEV_MODE` 默认开                                            |
+| CLI 中文 Windows 编码 | **已修**       | `cli.py:121-124` 改为字节 + `errors="replace"`；129/129 含该用例                                                  |
+| CI 不跑 Python 门禁   | **已修**       | `contracts.yml` 增加 pytest + verify-all；本地实测全绿                                                            |
 
 ---
 
@@ -191,15 +191,15 @@ def authorize(self, module):
 
 ### N13（中）旧实现问题仍未动
 
-| 问题 | 本轮证据 |
-|---|---|
-| `get_context(limit=0)` 返回全部 | 存 3 条，`limit=0` 返回 3 条（`memory.py:38` 的 `limit or window`） |
-| checkpoint_id 每次保存重新生成 | 6 次保存、5 个不同 ID（`orchestration.py:268,279,290,300` 等） |
-| 配置 PostgreSQL 却静默用 SQLite | 设 `UH_CHECKPOINT_POSTGRES_URL` 后 `store class: SQLiteCheckpointStore`（`orchestration.py:181-184`） |
-| 嵌套 trace 上下文清除外层 | `outer -> inner -> None`（`tracing.py:48-49` 用 `clear()` 而非 `reset(token)`） |
-| MCP stdio stderr 管道不消费 | `mcp.py:149`，静态 |
-| 单条坏 L2 密文使整体召回/导出崩溃 | `long_term_memory.py:272,308`，静态 |
-| 日志脱敏键名不全 | `mcp.py:405`，静态 |
+| 问题                          | 本轮证据                                                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------- |
+| `get_context(limit=0)` 返回全部 | 存 3 条，`limit=0` 返回 3 条（`memory.py:38` 的 `limit or window`）                                        |
+| checkpoint_id 每次保存重新生成      | 6 次保存、5 个不同 ID（`orchestration.py:268,279,290,300` 等）                                              |
+| 配置 PostgreSQL 却静默用 SQLite   | 设 `UH_CHECKPOINT_POSTGRES_URL` 后 `store class: SQLiteCheckpointStore`（`orchestration.py:181-184`） |
+| 嵌套 trace 上下文清除外层            | `outer -> inner -> None`（`tracing.py:48-49` 用 `clear()` 而非 `reset(token)`）                        |
+| MCP stdio stderr 管道不消费      | `mcp.py:149`，静态                                                                                   |
+| 单条坏 L2 密文使整体召回/导出崩溃         | `long_term_memory.py:272,308`，静态                                                                  |
+| 日志脱敏键名不全                    | `mcp.py:405`，静态                                                                                   |
 
 ### N14（中）UI 确认流程与重连仍缺失（静态）
 
@@ -214,13 +214,13 @@ def authorize(self, module):
 
 ## 3. 修复质量总评
 
-| 维度 | 评价 |
-|---|---|
-| 测试数量 | 从 110/111 提升到 129/129，verify-all full 8/8，门禁已真实生效 |
-| 安全修复 | 空 token、TTL、路径白名单、CLI 编码是实修；REST 鉴权、dev 门禁、令牌脱敏只修到一半 |
-| 新引入风险 | Host 头注入、幂等 Cookie 泄露、REST 默认豁免、别名绕过、RPC 确认绕过 |
-| 治理 | 契约状态已回写 frozen，但 ADR-003 与实现、PROGRESS/AGENTS/README 仍互相矛盾 |
-| 测试质量 | 新增用例覆盖了修复函数本身，但未覆盖绕过路径（别名、并发同键、dev_route 漏门、RPC 确认、重订阅实时事件） |
+| 维度    | 评价                                                          |
+| ----- | ----------------------------------------------------------- |
+| 测试数量  | 从 110/111 提升到 129/129，verify-all full 8/8，门禁已真实生效           |
+| 安全修复  | 空 token、TTL、路径白名单、CLI 编码是实修；REST 鉴权、dev 门禁、令牌脱敏只修到一半        |
+| 新引入风险 | Host 头注入、幂等 Cookie 泄露、REST 默认豁免、别名绕过、RPC 确认绕过               |
+| 治理    | 契约状态已回写 frozen，但 ADR-003 与实现、PROGRESS/AGENTS/README 仍互相矛盾   |
+| 测试质量  | 新增用例覆盖了修复函数本身，但未覆盖绕过路径（别名、并发同键、dev_route 漏门、RPC 确认、重订阅实时事件） |
 
 ---
 
