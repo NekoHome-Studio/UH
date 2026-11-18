@@ -9,7 +9,7 @@ description = "UH! 微内核 —— 个人 AI Agent 运行底座"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
-    "uvicorn>=0.30",
+    "uvicorn[standard]>=0.30",  # standard 含 websockets，WS 必需（跨机验收踩坑）
     "cryptography>=42",
     "jsonschema>=4.23",
 ]

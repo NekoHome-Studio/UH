@@ -475,7 +475,7 @@ def create_app() -> FastAPI:
         if session_id not in app.state.sessions:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})), ensure_ascii=False), status_code=404, media_type="application/json")
         client_id = request.headers.get("X-UH-Client-ID") or request.cookies.get("uh_client_id") or session_id
-        owner_token = _bearer_token(request.headers.get("Authorization"))
+        owner_token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")  # query token 也设归属，与 WS 一致
         task_id, trace_id = app.state.tasks.create(
             session_id,
             req.content,
