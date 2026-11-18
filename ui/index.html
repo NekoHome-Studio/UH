@@ -43,7 +43,7 @@
 </style>
 </head>
 <body>
-<header>UH! <span style="color:#475569;font-weight:400;font-size:13px">Ultra Harness · M1</span></header>
+<header style="display:flex;align-items:center;gap:12px">UH! <span style="color:#475569;font-weight:400;font-size:13px">Ultra Harness · M1</span><input id="token" type="password" placeholder="访问 token（鉴权模式必填）" style="margin-left:auto;background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:6px 10px;border-radius:8px;font-size:13px;width:240px"></header>
 <div id="chat" aria-live="polite" role="log"></div>
 <div id="bar"><div class="inner">
   <input id="prompt" placeholder="输入消息，开始对话…" autofocus autocomplete="off">
@@ -57,6 +57,15 @@ const send = document.getElementById('send');
 let sessionId = null, busy = false;
 let uiState = UHStateMachine.initialState();
 let lastEventId = 0, reconnectAttempts = 0, terminalReached = false;
+
+// 鉴权 token：URL ?token= 优先并存 localStorage；右上角输入框可改（生产鉴权模式 B）
+const tokenInput = document.getElementById('token');
+const urlToken = new URLSearchParams(location.search).get('token');
+let authToken = urlToken || localStorage.getItem('uh_token') || '';
+if (urlToken) localStorage.setItem('uh_token', urlToken);
+tokenInput.value = authToken;
+tokenInput.addEventListener('change', () => { authToken = tokenInput.value.trim(); localStorage.setItem('uh_token', authToken); sessionId = null; });
+function withToken(url) { return authToken ? url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(authToken) : url; }
 
 const DOMAIN = {
   USR: '请求/认证问题，请检查输入或重新登录',
@@ -93,7 +102,7 @@ function showError(code, message, traceId) {
   chat.appendChild(d); d.scrollIntoView({behavior:'smooth'});
 }
 function renderSteps(taskId) {
-  fetch('/api/v1/tasks/'+taskId+'/steps').then(r => r.ok ? r.json() : null).then(j => {
+  fetch(withToken('/api/v1/tasks/'+taskId+'/steps')).then(r => r.ok ? r.json() : null).then(j => {
     if (!j || !j.data) return;
     const steps = j.data.steps || [];
     if (!steps.length) return;
@@ -112,7 +121,7 @@ function showConfirmation(ev, taskId, traceId) {
   async function decide(decision) {
     approve.disabled = reject.disabled = true;
     try {
-      const r = await fetch('/api/v1/tasks/'+taskId+'/confirm', {method:'POST', headers:{'Content-Type':'application/json'},
+      const r = await fetch(withToken('/api/v1/tasks/'+taskId+'/confirm'), {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({confirmation_token:p.confirmation_token, decision, operator:'ui-user'})});
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showError((j.error&&j.error.code)||'UH-USR-1003', (j.error&&j.error.message)||'确认失败', traceId); approve.disabled = reject.disabled = false; }
@@ -136,7 +145,7 @@ function handleEvent(ev, target, taskId, traceId) {
 }
 function connectWs(taskId, target, traceId, afterEventId) {
   const wsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = wsScheme + '//' + location.host + '/api/v1/stream?task_id=' + encodeURIComponent(taskId) + '&after_event_id=' + afterEventId;
+  const wsUrl = wsScheme + '//' + location.host + '/api/v1/stream?task_id=' + encodeURIComponent(taskId) + '&after_event_id=' + afterEventId + (authToken ? '&token=' + encodeURIComponent(authToken) : '');
   const ws = new WebSocket(wsUrl);
   ws.onopen = () => ws.send(JSON.stringify({op:'subscribe', task_id:taskId, after_event_id:afterEventId}));
   ws.onmessage = (e) => {
@@ -163,11 +172,12 @@ async function submit() {
   addMsg('user', content);
   try {
     if (!sessionId) {
-      const sr = await fetch('/api/v1/sessions', {method:'POST'});
+      const sr = await fetch(withToken('/api/v1/sessions'), {method:'POST'});
+      if (sr.status === 401) { showError('UH-USR-1001', '需要访问 token，请在右上角输入后重试', null); tokenInput.focus(); busy=false; send.disabled=false; return; }
       if (!sr.ok) throw new Error('创建会话失败 HTTP '+sr.status);
       sessionId = (await sr.json()).data.session_id;
     }
-    const resp = await fetch('/api/v1/sessions/'+sessionId+'/messages', {
+    const resp = await fetch(withToken('/api/v1/sessions/'+sessionId+'/messages'), {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({content, mode:'auto'})
     });
