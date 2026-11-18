@@ -256,6 +256,8 @@ class TaskManager:
         if task["status"] == "running":
             cutoff = now - self.REPLAY_WINDOW_SECONDS
             task["event_buffer"][:] = [entry for entry in task["event_buffer"] if self._entry_recorded_at(entry) >= cutoff]
+        elif event in self.TERMINAL_EVENTS:
+            task["event_buffer"][:] = [e for e in task["event_buffer"] if e["event"]["event"] != "delta"]  # 四审 P1-4：终态释放 delta bulk，保留结构事件（step_log 保全量步骤）
         for subscriber in tuple(task["subscribers"]):
             await subscriber.put(mapped)
         return mapped
@@ -430,12 +432,14 @@ class TaskManager:
             return False
         owner_client_id = task.get("owner_client_id")
         owner_token = task.get("owner_token")
-        # The protocol only standardizes token transport.  When a task was
-        # created under a bearer token, that token is the authoritative owner
-        # identity and a WebSocket need not also carry the local cookie.
-        if owner_token:
-            return bool(token and secrets.compare_digest(token, owner_token))
-        return not owner_client_id or client_id == owner_client_id
+        # 四审 P0-2：双因子——设了 token 须 token 匹配，设了 client_id 须 client_id 匹配，
+        # 防单共享 token 下 client_id 分支被旁路致越权。注：client_id 为自 asserted，
+        # 完全多用户隔离需 per-user principal（M2/M3）；单共享 token 模型假设单用户设备。
+        if owner_token and not (token and secrets.compare_digest(token, owner_token)):
+            return False
+        if owner_client_id and client_id != owner_client_id:
+            return False
+        return True
 
     def subscribe(self, task_id: str, *, after_event_id: int = 0) -> tuple[asyncio.Queue, list[dict[str, Any]], bool] | None:
         """Register a live subscriber and return its replay snapshot.

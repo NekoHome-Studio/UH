@@ -118,6 +118,21 @@ def _dev_enabled() -> bool:
     return _truthy(os.environ.get("UH_LOCAL_MODE"))
 
 
+def _read_auth_token() -> str | None:
+    """四审 P0-1：密钥经 env 或 token 文件引用，禁硬编码进仓库/命令行。
+    优先 UH_AUTH_TOKEN env；否则读 UH_AUTH_TOKEN_FILE 指向的文件（服务器侧，不入仓库）。"""
+    tok = os.environ.get("UH_AUTH_TOKEN") or os.environ.get("UH_WS_AUTH_TOKEN") or os.environ.get("UH_WS_TOKEN")
+    if tok:
+        return tok
+    path = os.environ.get("UH_AUTH_TOKEN_FILE")
+    if path:
+        try:
+            return Path(path).read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+    return None
+
+
 def _bearer_token(value: str | None) -> str | None:
     if not value:
         return None
@@ -244,7 +259,7 @@ def create_app() -> FastAPI:
             auth_required = _truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
             _exempt = request.url.path in {"/health", "/ready", "/metrics", "/", "/static/state-machine.js", "/docs", "/openapi.json", "/redoc"}  # 三审 N10：docs/openapi 豁免供 SDK 生成
             if auth_required and not _exempt:
-                expected = os.environ.get("UH_AUTH_TOKEN") or os.environ.get("UH_WS_AUTH_TOKEN") or os.environ.get("UH_WS_TOKEN")
+                expected = _read_auth_token()
                 # 与 WS 一致：Bearer 头优先，亦接受 ?token= 查询参数（本地/测试便利）。
                 supplied = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
                 if not supplied or expected is None or not secrets.compare_digest(supplied, expected):
@@ -261,7 +276,7 @@ def create_app() -> FastAPI:
                 req_body = await request.body()
                 body_hash = hashlib.sha256(req_body).hexdigest()[:16]
                 # 二审 N5：多用户（鉴权）模式绑调用者身份防跨客户端复用；本地单用户模式不绑（cookie 中途设置会破坏同客户端回放）
-                caller = (request.cookies.get("uh_client_id") or request.headers.get("X-UH-Client-ID") or request.query_params.get("token") or "") if auth_required else ""
+                caller = (request.headers.get("X-UH-Client-ID") or request.cookies.get("uh_client_id") or request.query_params.get("token") or "") if auth_required else ""  # 四审 P1-5：header 优先稳 caller
                 cache_key = (request.method, request.url.path, idempotency_key, body_hash, caller)
             _idem_lock = app.state.idempotency_locks.setdefault(cache_key, asyncio.Lock()) if cache_key else None
             if _idem_lock is not None:
@@ -606,7 +621,10 @@ def create_app() -> FastAPI:
         return _envelope({"name": name, "available": app.state.rpc.is_available(name)})
 
     @app.get("/api/v1/tasks/{task_id}/stream")
-    async def task_stream(task_id: str):
+    async def task_stream(task_id: str, request: Request):
+        g = _task_guard(request, task_id)  # 四审 P0-2：SSE 补归属守卫（此前唯一漏的任务端点）
+        if g is not None:
+            return g
         async def gen():
             try:
                 async for ev in app.state.tasks.stream(task_id):
@@ -636,7 +654,7 @@ def create_app() -> FastAPI:
             await websocket.close(code=4404)
             return
 
-        expected_token = os.environ.get("UH_WS_AUTH_TOKEN") or os.environ.get("UH_WS_TOKEN") or os.environ.get("UH_AUTH_TOKEN")
+        expected_token = _read_auth_token()
         auth_required = _truthy(os.environ.get("UH_WS_AUTH_REQUIRED") or os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
         token = _bearer_token(params.get("token")) or _bearer_token(websocket.headers.get("Authorization"))
         authenticated = not auth_required

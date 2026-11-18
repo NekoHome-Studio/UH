@@ -112,7 +112,8 @@ def test_websocket_ping_and_auth_close_code(monkeypatch):
             assert raised.value.code == 4401
 
 
-def test_websocket_bearer_token_is_sufficient_owner_identity(monkeypatch):
+def test_websocket_ownership_requires_token_and_client_id(monkeypatch):
+    # 四审 P0-2：双因子归属——仅 token 无 client_id 被拒，token+client_id 匹配才通过。
     monkeypatch.setenv("UH_WS_AUTH_REQUIRED", "true")
     monkeypatch.setenv("UH_WS_AUTH_TOKEN", "owner-token")
     app = create_app()
@@ -120,11 +121,18 @@ def test_websocket_bearer_token_is_sufficient_owner_identity(monkeypatch):
         session_id = creator.post("/api/v1/sessions").json()["data"]["session_id"]
         data = creator.post(
             f"/api/v1/sessions/{session_id}/messages",
-            headers={"Authorization": "Bearer owner-token"},
+            headers={"Authorization": "Bearer owner-token", "X-UH-Client-ID": session_id},
             json={"content": "hello"},
         ).json()["data"]
-    # A separate client has no local cookie.  The authenticated bearer token
-    # itself must still prove ownership of the task.
+    # 仅 token、无 client_id → 4403（不再「token 单独足够」）
+    with TestClient(app) as other:
+        with other.websocket_connect(f"/api/v1/stream?task_id={data['task_id']}&token=owner-token") as ws:
+            err = ws.receive_json()
+            assert err["op"] == "error" and err["error"]["code"] == "UH-USR-1002"
+            with pytest.raises(WebSocketDisconnect) as ei:
+                ws.receive_json()
+            assert ei.value.code == 4403
+    # token + client_id 匹配 → 通过
     with TestClient(app) as owner:
-        with owner.websocket_connect(f"/api/v1/stream?task_id={data['task_id']}&token=owner-token") as ws:
+        with owner.websocket_connect(f"/api/v1/stream?task_id={data['task_id']}&token=owner-token&client_id={session_id}") as ws:
             assert ws.receive_json()["event"] == "task.created"

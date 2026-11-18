@@ -379,11 +379,15 @@ class MCPHost:
         if "error" in response:
             error = response.get("error") or {}
             data = error.get("data") if isinstance(error, dict) else {}
+            upstream_code = error.get("code") if isinstance(error, dict) else None
+            # 四审 P2-3：参数类错误（-32602，如路径越界）必然失败不可重试 → USR-1003
+            if upstream_code == -32602:
+                raise MCPError("UH-USR-1003", str(error.get("message", "请求参数无效")), retryable=False, detail={"module": "tool", "upstream_code": upstream_code, **(data if isinstance(data, dict) else {})})
             raise MCPError(
                 module_error_code(),
                 str(error.get("message", "MCP 上游服务错误")) if isinstance(error, dict) else "MCP 上游服务错误",
                 retryable=True,
-                detail={"module": "tool", "upstream_code": error.get("code") if isinstance(error, dict) else None, **(data if isinstance(data, dict) else {})},
+                detail={"module": "tool", "upstream_code": upstream_code, **(data if isinstance(data, dict) else {})},
             )
         return response
 
@@ -549,7 +553,7 @@ class MCPHost:
                         "call_id": call_id, "tool_name": name, "status": "denied",
                         "truncated": False, "content_preview": None,
                         "duration_ms": int((time.monotonic() - started) * 1000), "task_id": task_id,
-                    }, trace_id=trace_id, from_="mcp_host")
+                    }, trace_id=trace_id, from_="mcp_host", span_id=(_call_env.span_id if _call_env else ""))
                 raise MCPError("UH-USR-1002", f"高危工具 {name} 确认被拒绝，未执行", retryable=False, detail={"module": "tool", "tool_name": name, "confirmation_required": True, "risk_level": risk, "call_id": call_id})
         last_error: MCPError | None = None
         for attempt in range(retries + 1):
@@ -560,7 +564,7 @@ class MCPHost:
                         "call_id": call_id, "tool_name": name, "status": "ok", "truncated": result.get("truncated", False),
                         "content_preview": self._content_preview(result.get("content", [])),
                         "duration_ms": int((time.monotonic() - started) * 1000), "task_id": task_id,
-                    }, trace_id=trace_id, from_="mcp_host")
+                    }, trace_id=trace_id, from_="mcp_host", span_id=(_call_env.span_id if _call_env else ""))
                 return result
             except MCPError as exc:
                 last_error = exc
@@ -574,7 +578,7 @@ class MCPHost:
                 "call_id": call_id, "tool_name": name, "status": "timeout" if last_error.code == "UH-CAP-5021" else "error",
                 "truncated": False, "content_preview": None,
                 "duration_ms": int((time.monotonic() - started) * 1000), "error": last_error.to_dict(), "task_id": task_id,
-            }, trace_id=trace_id, from_="mcp_host")
+            }, trace_id=trace_id, from_="mcp_host", span_id=(_call_env.span_id if _call_env else ""))
         raise last_error
 
     async def register_capabilities(

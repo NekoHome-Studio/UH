@@ -116,6 +116,13 @@ const sbxRefs = [];
 for (const f of walk("uh-issues/issues", [".md"])) for (const m of read(f).matchAll(/SBX-0\d/g)) if (!sbxDefined.includes(m[0])) sbxRefs.push(f + ": " + m[0]);
 check("8 SBX 引用受控（01~09 已定义）", sbxRefs.length === 0, "定义=" + [...new Set(sbxDefined)].sort().join(",") + " 越界=" + sbxRefs.length);
 
+// 9) 密钥扫描（四审 P0-1）：禁止明文鉴权 token 入仓库（UH_AUTH_TOKEN=<长值>，排除占位符/文件引用）
+const secretHits = [];
+for (const f of [...walk("docs", [".md"]), ...walk("kernel", [".py"]), ...walk("scripts", [".mjs", ".ps1"]), ...walk("briefs", [".md"]), "README.md", "AGENTS.md"]) {
+  if (/UH_AUTH_TOKENs*=s*["']?[A-Za-z0-9_-]{20,}/.test(read(f))) secretHits.push(f);
+}
+check("9 密钥扫描（无明文 token 入仓库）", secretHits.length === 0, "hits=" + secretHits.join(","));
+
 const failed = results.filter(r => !r.ok);
 console.log(failed.length === 0 ? "PRECHECK_ALL_PASSED (" + results.length + " checks)" : "PRECHECK_FAILED=" + failed.length);
 const _out = path.join(ROOT, ".work/precheck-results.json");
