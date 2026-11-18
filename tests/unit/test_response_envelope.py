@@ -49,6 +49,7 @@ def test_idempotency_replays_first_result_without_repeating_side_effect():
         return "uh_task_once", "uh_trc_" + "cd" * 16
 
     app.state.tasks.create = fake_create
+    app.state.sessions.add("demo")
     client = TestClient(app)
     headers = {"Idempotency-Key": "message-once"}
     first = client.post("/api/v1/sessions/demo/messages", json={"content": "hello"}, headers=headers)
@@ -70,6 +71,7 @@ def test_message_pagination_reports_total_and_has_more():
         ]
 
     app.state.memory.get_context = fake_context
+    app.state.sessions.add("demo")
     response = TestClient(app).get("/api/v1/sessions/demo/messages?page=2&page_size=2")
 
     assert response.status_code == 200

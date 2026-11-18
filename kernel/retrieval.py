@@ -138,21 +138,21 @@ class LocalVectorStore:
 class ChromaVectorStore(LocalVectorStore):
     """可选 Chroma 后端；依赖不存在时构造即回退本地实现。"""
 
-    def __init__(self, path: str | Path | None = None, embedding: DeterministicEmbedding | None = None) -> None:
+    def __init__(self, path: str | Path | None = None, embedding: DeterministicEmbedding | None = None, guard: Any = None, module: str = "retrieval.search", namespace: str = "retrieval") -> None:
+        # 三审 N1：先 super().__init__ 确保 _guard/_module/_namespace 始终存在（防 AttributeError），再 chroma 初始化。
+        super().__init__(path=path, embedding=embedding, guard=guard, module=module, namespace=namespace)
         self._chroma = None
         try:
             import chromadb  # type: ignore
 
             self._chroma = chromadb.PersistentClient(path=str(path or os.environ.get("UH_RETRIEVAL_CHROMA", ".uh/chroma")))
             self._collection = self._chroma.get_or_create_collection("uh_retrieval")
+            self.documents = []
         except Exception:
-            super().__init__(path=path, embedding=embedding)
-            return
-        self.embedding = embedding or DeterministicEmbedding()
-        self.path = Path(path or ".uh/chroma")
-        self.documents = []
+            self._chroma = None  # 回退本地（super 已初始化 documents/_guard）
 
     def add(self, document: Document) -> Document:
+        self._guard_access()  # 三审 N1：Chroma 后端也过存储隔离
         if self._chroma is None:
             return super().add(document)
         document.vector = self.embedding.embed(document.text)
@@ -163,6 +163,7 @@ class ChromaVectorStore(LocalVectorStore):
         return document
 
     def query(self, query: str, top_k: int = 5) -> list[tuple[Document, float]]:
+        self._guard_access()  # 三审 N1：Chroma 后端也过存储隔离
         if self._chroma is None:
             return super().query(query, top_k)
         result = self._collection.query(query_embeddings=[self.embedding.embed(query)], n_results=max(1, top_k))
@@ -184,7 +185,7 @@ class LlamaIndexChromaStore(ChromaVectorStore):
     到本地实现，保证内核和离线测试不携带第三方对象。
     """
 
-    def __init__(self, path: str | Path | None = None, embedding: DeterministicEmbedding | None = None) -> None:
+    def __init__(self, path: str | Path | None = None, embedding: DeterministicEmbedding | None = None, guard: Any = None, module: str = "retrieval.search", namespace: str = "retrieval") -> None:
         self.llama_index_available = False
         try:
             import llama_index.core  # type: ignore  # noqa: F401
@@ -192,7 +193,7 @@ class LlamaIndexChromaStore(ChromaVectorStore):
             self.llama_index_available = True
         except Exception:
             pass
-        super().__init__(path=path, embedding=embedding)
+        super().__init__(path=path, embedding=embedding, guard=guard, module=module, namespace=namespace)
 
 
 def _read_document(path: str | Path) -> tuple[str, str, str]:
@@ -222,9 +223,9 @@ class RetrievalService:
         if store is not None:
             self.store = store
         elif backend == "chroma":
-            self.store = ChromaVectorStore()
+            self.store = ChromaVectorStore(guard=guard)
         elif backend == "llamaindex":
-            self.store = LlamaIndexChromaStore()
+            self.store = LlamaIndexChromaStore(guard=guard)
         else:
             self.store = LocalVectorStore(guard=guard)
 

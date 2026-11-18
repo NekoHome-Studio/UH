@@ -100,7 +100,9 @@ def test_stream_url_no_host_injection():
 
 # --- 二审 N5：幂等回放不泄漏 Set-Cookie ---
 def test_idempotency_replay_no_set_cookie():
-    with TestClient(create_app()) as c:
+    app = create_app()
+    app.state.sessions.add("demo")
+    with TestClient(app) as c:
         url = "/api/v1/sessions/demo/messages"
         hdr = {"Idempotency-Key": "k1"}
         c.post(url, json={"content": "x"}, headers=hdr)

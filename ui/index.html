@@ -115,8 +115,8 @@ function showConfirmation(ev, taskId, traceId) {
       const r = await fetch('/api/v1/tasks/'+taskId+'/confirm', {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({confirmation_token:p.confirmation_token, decision, operator:'ui-user'})});
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) showError((j.error&&j.error.code)||'UH-USR-1003', (j.error&&j.error.message)||'确认失败', traceId);
-    } catch (e) { showError('UH-KRN-5001', String(e), traceId); }
+      if (!r.ok) { showError((j.error&&j.error.code)||'UH-USR-1003', (j.error&&j.error.message)||'确认失败', traceId); approve.disabled = reject.disabled = false; }
+    } catch (e) { showError('UH-KRN-5001', String(e), traceId); approve.disabled = reject.disabled = false; }
   }
   approve.onclick = () => decide('approved');
   reject.onclick = () => decide('rejected');

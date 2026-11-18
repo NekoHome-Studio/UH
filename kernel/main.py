@@ -128,6 +128,7 @@ def _bearer_token(value: str | None) -> str | None:
 def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
     app.state.idempotency_cache = {}
+    app.state.sessions = set()  # 三审 P1-6：会话注册表（存在性校验）
     app.state.idempotency_locks = {}
     app.state.plugins = []
     app.state.memory = create_short_term_memory()
@@ -344,6 +345,10 @@ def create_app() -> FastAPI:
                             app.state.idempotency_cache.pop(k, None)
                         while len(app.state.idempotency_cache) > 1000:
                             app.state.idempotency_cache.pop(next(iter(app.state.idempotency_cache)), None)
+                        # 三审 P2-1：锁表随缓存回收，防单调增长
+                        for k in list(app.state.idempotency_locks):
+                            if k not in app.state.idempotency_cache:
+                                app.state.idempotency_locks.pop(k, None)
                 if not is_replay:
                     response.headers["X-Trace-Id"] = trace_id
                 return response
@@ -459,11 +464,15 @@ def create_app() -> FastAPI:
     async def create_session(response: Response):
         sid = "uh_ses_" + secrets.token_hex(16)
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        app.state.sessions.add(sid)
         response.set_cookie("uh_client_id", sid, httponly=True, samesite="lax")
         return _envelope({"session_id": sid, "status": "active", "created_at": now})
 
     @app.post("/api/v1/sessions/{session_id}/messages", status_code=202)
     async def send_message(session_id: str, req: MessageRequest, request: Request, response: Response):
+        # 三审 P1-6：会话存在性校验（契约要求不存在会话 USR-1003）
+        if session_id not in app.state.sessions:
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})), ensure_ascii=False), status_code=404, media_type="application/json")
         client_id = request.headers.get("X-UH-Client-ID") or request.cookies.get("uh_client_id") or session_id
         owner_token = _bearer_token(request.headers.get("Authorization"))
         task_id, trace_id = app.state.tasks.create(
@@ -481,6 +490,11 @@ def create_app() -> FastAPI:
         # sse_url 保留 M0 SSE 过渡通道。
         # 二审 N4 修复：不信任请求 Host 头（防注入）；用可信 UH_PUBLIC_BASE_URL，否则相对路径。
         public_base = os.environ.get("UH_PUBLIC_BASE_URL", "").rstrip("/")
+        # 三审 P1-1：可信 base 的 http(s) 转 ws(s)，符 task-flow §1 wss 句柄
+        if public_base.startswith("https://"):
+            public_base = "wss://" + public_base[len("https://"):]
+        elif public_base.startswith("http://"):
+            public_base = "ws://" + public_base[len("http://"):]
         stream_url = (public_base + "/api/v1/stream?task_id=" + task_id) if public_base else ("/api/v1/stream?task_id=" + task_id)
         sse_url = "/api/v1/tasks/" + task_id + "/stream"
         return _envelope({"task_id": task_id, "stream_url": stream_url, "sse_url": sse_url, "trace_id": trace_id})

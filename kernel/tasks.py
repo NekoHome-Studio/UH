@@ -61,7 +61,7 @@ class TaskManager:
             if external is None:
                 return
             payload = {k: v for k, v in env.payload.items() if k != "task_id"}
-            await self._emit(task, external, payload)
+            await self._emit(task, external, payload, span_id=env.span_id)  # 三审 P1-3：保留内部 span_id 供审计反查
         bus.subscribe("mcp.tool.*", handler)
 
     @staticmethod
@@ -184,23 +184,8 @@ class TaskManager:
         task = self.tasks.get(task_id)
         if task is None:
             return None
-        by_step: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
-        for entry in task["event_buffer"]:
-            ev = entry["event"]
-            name, payload = ev.get("event"), ev.get("payload", {})
-            sid = payload.get("step_id")
-            if not sid:
-                continue
-            if name == "step.started":
-                by_step[sid] = {"seq": ev["event_id"], "step_id": sid, "module": payload.get("module"), "name": payload.get("name"), "status": "running", "duration_ms": None}
-                order.append(sid)
-            elif name == "step.finished" and sid in by_step:
-                by_step[sid]["status"] = "done"
-                by_step[sid]["duration_ms"] = payload.get("duration_ms")
-            elif name == "step.failed" and sid in by_step:
-                by_step[sid]["status"] = "failed"
-        return [by_step[s] for s in order]
+        # 三审 P1-5：读永久 step_log（非裁剪缓冲），超窗仍可全量重建
+        return list(task.get("step_log", {}).values())
 
     async def cancel(self, task_id: str, reason: str = "user_request") -> dict | None:
         """取消任务（task-flow §4）：终态任务抛 ResumeConflictError（端点转 409）。"""
@@ -254,6 +239,16 @@ class TaskManager:
         if mapped is None:
             return None
         task["seq"] = mapped["event_id"]
+        # 三审 P1-5：step 永久日志（不随 5min 缓冲裁剪），供超窗全量回退；duration_ms 恒 integer
+        if event in {"step.started", "step.finished", "step.failed"}:
+            slog = task.setdefault("step_log", {})
+            sid = payload.get("step_id")
+            if sid:
+                if event == "step.started":
+                    slog[sid] = {"seq": mapped["event_id"], "step_id": sid, "module": payload.get("module"), "name": payload.get("name"), "status": "running", "duration_ms": 0}
+                elif sid in slog:
+                    slog[sid]["status"] = "done" if event == "step.finished" else "failed"
+                    slog[sid]["duration_ms"] = int(payload.get("duration_ms") or 0)
         if event in self.TERMINAL_EVENTS:
             task["status"] = event.rsplit(".", 1)[-1]
         now = time.time()
@@ -371,17 +366,19 @@ class TaskManager:
         task = self.tasks.get(task_id)
         if task is None:
             return None
+        # 三审 N3：终态 guard 前移——任何终态任务 resume 一致 409（含无 checkpoint 的 chat 任务）
+        if task.get("status") in {"finished", "failed", "cancelled"}:
+            raise ResumeConflictError("任务已终态，不可 resume；重跑请创建新任务")
         orchestration = self.orchestration
         checkpoint = orchestration.checkpoint(task_id, checkpoint_id) if orchestration is not None else None
         if checkpoint is None:
             return None
-        # 终态唯一性 guard：已完成/终态任务不可 resume（否则重发终态事件，污染回放游标）
-        if checkpoint.status == "completed" or task.get("status") in {"finished", "failed", "cancelled"}:
+        if checkpoint.status == "completed":
             raise ResumeConflictError("任务已终态，不可 resume；重跑请创建新任务")
         task["queue"] = asyncio.Queue()
         task["status"] = "running"
         skipped_steps = len(checkpoint.completed_nodes)
-        asyncio.create_task(self._resume_workflow(task, checkpoint.checkpoint_id, skipped_steps, checkpoint.last_event_id, checkpoint.state.get("content", "")))
+        task["_runner"] = asyncio.create_task(self._resume_workflow(task, checkpoint.checkpoint_id, skipped_steps, checkpoint.last_event_id, checkpoint.state.get("content", "")))  # 三审 P1-4：写回 runner 供 cancel
         return {"task_id": task_id, "resumed_from_event_id": checkpoint.last_event_id, "checkpoint_id": checkpoint.checkpoint_id}
 
     async def _resume_workflow(self, task: dict[str, Any], checkpoint_id: str, skipped_steps: int, resumed_from_event_id: int, content: str) -> None:

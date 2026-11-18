@@ -134,6 +134,11 @@ def dev_down(args) -> int:
     pid = _read_pid()
     if pid:
         _terminate(pid)
+        # 三审 GPT-6 P2-3：等待子进程完全退出，防 reset 删日志后子进程重建（flaky 根因）
+        for _ in range(30):
+            if not _alive(pid):
+                break
+            time.sleep(0.1)
         PID_FILE.unlink(missing_ok=True)
         print("UH! 已停止（pid %s）" % pid)
     else:

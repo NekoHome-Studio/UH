@@ -521,8 +521,9 @@ class MCPHost:
         retries = int(max_retries if max_retries is not None else self.max_retries) if idem else 0
         call_id = call_id or f"mcp_call_{next(self._request_ids)}"
         started = time.monotonic()
+        _call_env = None
         if self.bus:
-            await self.bus.publish("mcp.tool.call", {
+            _call_env = await self.bus.publish("mcp.tool.call", {
                 "call_id": call_id, "tool_name": name, "args_summary": self._args_summary(arguments),
                 "risk_level": risk, "requires_confirmation": risk in {"write-host", "irreversible"},
                 "task_id": task_id,
@@ -530,6 +531,13 @@ class MCPHost:
         # M1-8 确认门 + 二审 N3 修复：高危工具 fail-closed——无确认通道一律拒绝（RPC 路径不可绕过）。
         if risk in {"write-host", "irreversible"}:
             if confirm is None:
+                # 三审 P1-3：fail-closed 也补 tool.result(denied)，与 tool.call 配对（同 span）
+                if self.bus:
+                    await self.bus.publish("mcp.tool.result", {
+                        "call_id": call_id, "tool_name": name, "status": "denied",
+                        "truncated": False, "content_preview": None,
+                        "duration_ms": int((time.monotonic() - started) * 1000), "task_id": task_id,
+                    }, trace_id=trace_id, from_="mcp_host", span_id=(_call_env.span_id if _call_env else ""))
                 raise MCPError("UH-USR-1002", f"高危工具 {name} 须经确认通道", retryable=False, detail={"module": "tool", "tool_name": name, "confirmation_required": True, "risk_level": risk})
             decision = confirm(name, risk, self._args_summary(arguments), call_id)
             if asyncio.iscoroutine(decision):
