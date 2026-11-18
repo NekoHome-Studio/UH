@@ -40,5 +40,5 @@ jobs:
         run: npm install ajv@8 js-yaml@4
       - name: 单元测试（审查修复：CI 必须跑 pytest）
         run: python -m pytest -q
-      - name: 契约门禁 verify-all（含运行时双向校验）
-        run: node scripts/verify-all.mjs
+      - name: 契约门禁 verify-all --full（含运行时双向 + OpenAPI/AsyncAPI 官方解析，三审 N8）
+        run: node scripts/verify-all.mjs --full

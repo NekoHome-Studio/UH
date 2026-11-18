@@ -132,11 +132,12 @@ def create_app() -> FastAPI:
     app.state.idempotency_locks = {}
     app.state.plugins = []
     app.state.memory = create_short_term_memory()
-    app.state.long_term_memory = create_long_term_memory()
-    app.state.llm = create_llm_client()
     app.state.bus = EventBus()
     app.state.guard = StorageGuard()
     app.state.guard.declare("retrieval.search", {"retrieval"})  # 提前声明，供检索存储运行时归属校验
+    app.state.guard.declare("memory.long_term", {"long_term"})  # 三审 N9：长期记忆命名空间
+    app.state.long_term_memory = create_long_term_memory(guard=app.state.guard)
+    app.state.llm = create_llm_client()
     app.state.rpc = CapabilityRegistry(app.state.bus, app.state.guard)
     app.state.retrieval_server = RetrievalMCPServer(guard=app.state.guard)
     if os.environ.get("UH_RETRIEVAL_MCP_COMMAND"):
@@ -241,7 +242,7 @@ def create_app() -> FastAPI:
             # 二审 N1/N2 修复：默认值与 WS 对齐（UH_LOCAL_MODE 无默认，单设 UH_AUTH_REQUIRED=1 即生效）；
             # 鉴权覆盖所有业务端点含遗留别名（/memory/*、/plugins），仅 ops 与 UI 静态豁免。
             auth_required = _truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
-            _exempt = request.url.path in {"/health", "/ready", "/metrics", "/", "/static/state-machine.js"}
+            _exempt = request.url.path in {"/health", "/ready", "/metrics", "/", "/static/state-machine.js", "/docs", "/openapi.json", "/redoc"}  # 三审 N10：docs/openapi 豁免供 SDK 生成
             if auth_required and not _exempt:
                 expected = os.environ.get("UH_AUTH_TOKEN") or os.environ.get("UH_WS_AUTH_TOKEN") or os.environ.get("UH_WS_TOKEN")
                 # 与 WS 一致：Bearer 头优先，亦接受 ?token= 查询参数（本地/测试便利）。
@@ -590,7 +591,7 @@ def create_app() -> FastAPI:
         for r in reqs:
             d = r.to_dict()
             tok = d.get("confirmation_token") or ""
-            d["confirmation_token"] = (tok[:6] + "…[redacted]") if tok else None
+            d["confirmation_token"] = "[redacted]" if tok else None  # 三审：全脱敏，不留前缀
             items.append(d)
         return _envelope({"confirmations": items, "audit": app.state.confirmations.audit})
 

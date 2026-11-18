@@ -56,9 +56,11 @@
 | 13 | 等待/中断 | task.confirmation_resolved | 确认被批准/拒绝/超时 | 否 |
 | 14 | 等待/中断 | task.yielded | CUA 让位（预留，v0.1.0 无官方发射器） | 否 |
 | 15 | 等待/中断 | task.degraded | 能力降级（CAP-3001 等） | 否 |
-| 16 | 安全/验证 | safety.check_started | 注入检测/工具风险/输出过滤开始 | 否 |
-| 17 | 安全/验证 | safety.check_finished | 安全检查结束 | 否 |
-| 18 | 安全/验证 | safety.denied | 安全检查拦截动作 | 否 |
+| 16 | 安全/验证 | safety.check_started | 注入检测/工具风险/输出过滤开始（预留，v0.1.0 无运行时发射器，M2/M3 安全层） | 否 |
+| 17 | 安全/验证 | safety.check_finished | 安全检查结束（预留，v0.1.0 无运行时发射器） | 否 |
+| 18 | 安全/验证 | safety.denied | 安全检查拦截动作（预留，v0.1.0 无运行时发射器） | 否 |
+
+> 发射器口径（三审 N6）：v0.1.0 运行时发射器 15/18；task.yielded（CUA）与 safety.*×3 为预留事件，仅 schema/映射表登记，无生产发射点，M2/M3 实装。「18 事件端到端」指 schema 契约完备，非全部有运行时发射器。
 
 direction 全部为 server_to_client；emitted_by 均为 kernel（代各能力模块转发）。内部事件（direction=internal）见 §6 映射表。
 计数说明（决议 C1）：提案表列 17 个与宣称 18 差 1，补 task.resumed（M1-4 resume 的 UI 可见性必需）凑齐 18。

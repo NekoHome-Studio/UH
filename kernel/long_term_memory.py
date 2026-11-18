@@ -147,10 +147,13 @@ class LongTermMemory:
         vector_store: LocalVectorStore | None = None,
         classifier: PrivacyClassifier | None = None,
         master_key: bytes | str | None = None,
+        guard: Any = None,
     ) -> None:
         self.classifier = classifier or PrivacyClassifier()
+        # 三审 N9：长期记忆向量库也接存储隔离
         self.vector_store = vector_store or store or LocalVectorStore(
-            os.environ.get("UH_LONG_TERM_VECTOR_STORE", ".uh/long_term_vectors.json")
+            os.environ.get("UH_LONG_TERM_VECTOR_STORE", ".uh/long_term_vectors.json"),
+            guard=guard, module="memory.long_term", namespace="long_term",
         )
         self.path = Path(path or os.environ.get("UH_LONG_TERM_STORE", ".uh/long_term_memory.json"))
         self.entries: list[LongTermEntry] = []
@@ -340,6 +343,6 @@ class LongTermMemory:
         return self.recall(*args, **kwargs)
 
 
-def create_long_term_memory() -> LongTermMemory:
-    return LongTermMemory()
+def create_long_term_memory(guard: Any = None) -> LongTermMemory:
+    return LongTermMemory(guard=guard)
 
