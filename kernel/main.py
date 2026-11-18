@@ -575,10 +575,13 @@ def create_app() -> FastAPI:
         return _envelope({**result, "status": "cancelling"})  # 二审 R3：补 status 符 openapi CancelResult
 
     @app.post("/api/v1/dev/tool-task", status_code=202)
-    async def dev_tool_task(req: ToolTaskRequest):
+    async def dev_tool_task(req: ToolTaskRequest, request: Request):
         if not _dev_enabled():
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "not found")), ensure_ascii=False), status_code=404, media_type="application/json")
-        task_id, trace_id = app.state.tasks.create_tool_task(req.session_id, req.tool_name, req.arguments, req.risk_level, app.state.retrieval_host)
+        # 与 send_message 一致：设归属（query token 也认），供 confirm/WS 归属校验
+        client_id = request.headers.get("X-UH-Client-ID") or request.cookies.get("uh_client_id") or req.session_id
+        owner_token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
+        task_id, trace_id = app.state.tasks.create_tool_task(req.session_id, req.tool_name, req.arguments, req.risk_level, app.state.retrieval_host, owner_client_id=client_id, owner_token=owner_token)
         return _envelope({"task_id": task_id, "trace_id": trace_id, "sse_url": "/api/v1/tasks/" + task_id + "/stream"})
 
     @app.get("/api/v1/dev/confirmations")
