@@ -66,3 +66,10 @@ def test_reset_cleans_logs():
     rc = cli.main(["dev", "reset", "--keep-vectors"])
     assert rc == 0
     assert not cli.LOG_FILE.exists()
+
+
+def test_plugin_validate_official_template(monkeypatch):
+    monkeypatch.setenv("UH_LOCAL_MODE", "1")
+    monkeypatch.setenv("UH_PLUGIN_ALLOW_UNVERIFIED", "1")
+    rc = cli.main(["plugin", "validate", "examples/plugins/official/web-search", "--no-verify"])
+    assert rc == 0

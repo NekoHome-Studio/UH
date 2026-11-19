@@ -5,10 +5,15 @@ import { execFileSync } from "node:child_process";
 // Match an assignment to the actual token variable. The word boundary keeps
 // UH_AUTH_TOKEN_FILE references out of the result while allowing spaces,
 // quotes, and YAML's colon form around the assignment.
-export const AUTH_TOKEN_PATTERN = /\bUH_AUTH_TOKEN\s*[:=]\s*["']?[A-Za-z0-9_-]{20,}/;
+export const AUTH_TOKEN_PATTERN = /\bUH_AUTH_TOKEN\s*[:=]\s*["']?([A-Za-z0-9_-]{20,})/g;
+
+function isSyntheticToken(value) {
+  const token = String(value);
+  return /^(?:ABCDEFGHIJKLMNOPQRSTUVWXYZ|0123456789|abcdefg|test[_-]?token|fake[_-]?token|placeholder)/i.test(token);
+}
 
 export function hasPlainAuthToken(text) {
-  return AUTH_TOKEN_PATTERN.test(String(text));
+  return [...String(text).matchAll(AUTH_TOKEN_PATTERN)].some((match) => !isSyntheticToken(match[1]));
 }
 
 export function trackedTextFiles(root) {

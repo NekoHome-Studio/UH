@@ -7,6 +7,7 @@ Desktop 壳（Tauri）M3-6 实装，M0 下 desktop/both 优雅降级为内核+We
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import signal
@@ -22,6 +23,8 @@ from pathlib import Path
 import yaml
 
 from .long_term_memory import create_long_term_memory
+from .plugins import PluginDriver, PluginError, PluginManifest
+from .sandbox import SandboxRunner
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / ".uh"
@@ -243,6 +246,114 @@ def confirm_task(args) -> int:
         return 1
 
 
+def _plugin_driver() -> PluginDriver:
+    return PluginDriver(sandbox_runner=SandboxRunner())
+
+
+def plugin_validate(args) -> int:
+    try:
+        result = _plugin_driver().validate(args.source, no_verify=args.no_verify)
+    except PluginError as exc:
+        print(json.dumps(exc.to_dict(), ensure_ascii=False), file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def plugin_install(args) -> int:
+    try:
+        result = asyncio.run(_plugin_driver().install(args.source, no_verify=args.no_verify))
+    except PluginError as exc:
+        print(json.dumps(exc.to_dict(), ensure_ascii=False), file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def plugin_uninstall(args) -> int:
+    try:
+        result = asyncio.run(_plugin_driver().uninstall(args.name))
+    except PluginError as exc:
+        print(json.dumps(exc.to_dict(), ensure_ascii=False), file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def plugin_list(args) -> int:
+    print(json.dumps(_plugin_driver().list(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def plugin_audit(args) -> int:
+    rows = []
+    for item in _plugin_driver().list():
+        rows.append({
+            "name": item.get("name"),
+            "version": item.get("version"),
+            "type": item.get("type"),
+            "status": item.get("status"),
+            "risk_level": item.get("risk_level"),
+            "permissions": item.get("permissions", []),
+            "package_sha256": item.get("package_sha256"),
+        })
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
+    return 0
+
+
+def plugin_dev(args) -> int:
+    source = Path(args.source).resolve()
+    if not source.is_dir():
+        print("uh plugin dev 需要插件源目录", file=sys.stderr)
+        return 1
+    manifest_path = source / "manifest.yaml"
+    if not manifest_path.exists():
+        print("插件目录缺少 manifest.yaml", file=sys.stderr)
+        return 1
+    try:
+        manifest = PluginManifest.from_dict(yaml.safe_load(manifest_path.read_text(encoding="utf-8")))
+        runner = SandboxRunner(enforce=False, root=source.parent)
+        plan = runner.build_plan(manifest, source)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    env = dict(plan.env)
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    watched = [manifest_path, source / (manifest.entry or "main.py")]
+    process = None
+
+    def start():
+        nonlocal process
+        process = subprocess.Popen(list(plan.command), cwd=str(plan.cwd), env=env)
+
+    def stop():
+        nonlocal process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        process = None
+
+    try:
+        start()
+        if args.once:
+            return process.wait()
+        mtimes = {path: path.stat().st_mtime_ns for path in watched if path.exists()}
+        while True:
+            time.sleep(0.5)
+            changed = any(path.exists() and path.stat().st_mtime_ns != mtimes.get(path) for path in watched)
+            if changed:
+                mtimes = {path: path.stat().st_mtime_ns for path in watched if path.exists()}
+                stop()
+                start()
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        stop()
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="uh", description="UH! Ultra Harness CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -267,6 +378,21 @@ def main(argv=None) -> int:
     confirm.add_argument("--operator", default="cli-user", help="确认人")
     confirm.add_argument("--port", type=int)
     confirm.add_argument("--host", default="127.0.0.1")
+    plugin = sub.add_parser("plugin", help="插件管理")
+    pluginsub = plugin.add_subparsers(dest="action")
+    validate = pluginsub.add_parser("validate", help="校验插件 manifest、包体和签名")
+    validate.add_argument("source")
+    validate.add_argument("--no-verify", action="store_true")
+    install = pluginsub.add_parser("install", help="安装 .uhpkg 插件")
+    install.add_argument("source")
+    install.add_argument("--no-verify", action="store_true")
+    uninstall = pluginsub.add_parser("uninstall", help="卸载插件")
+    uninstall.add_argument("name")
+    pluginsub.add_parser("list", help="列出已安装插件")
+    pluginsub.add_parser("audit", help="输出插件权限矩阵")
+    dev_plugin = pluginsub.add_parser("dev", help="开发目录热重载")
+    dev_plugin.add_argument("source")
+    dev_plugin.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
     if args.cmd == "confirm":
         return confirm_task(args)
@@ -274,6 +400,17 @@ def main(argv=None) -> int:
         if not getattr(args, "action", None):
             parser.print_help(); return 0
         return {"purge": memory_purge, "export": memory_export}[args.action](args)
+    if args.cmd == "plugin":
+        if not getattr(args, "action", None):
+            plugin.print_help(); return 0
+        return {
+            "validate": plugin_validate,
+            "install": plugin_install,
+            "uninstall": plugin_uninstall,
+            "list": plugin_list,
+            "audit": plugin_audit,
+            "dev": plugin_dev,
+        }[args.action](args)
     if args.cmd != "dev" or not getattr(args, "action", None):
         parser.print_help(); return 0
     return {"up": dev_up, "down": dev_down, "logs": dev_logs, "reset": dev_reset, "watch": dev_watch}[args.action](args)

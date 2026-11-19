@@ -1,0 +1,15 @@
+name: file
+version: 0.1.0
+type: tool
+description: 在插件私有沙箱目录读写文本文件
+author: uh-official
+license: MIT
+entry: main.py
+risk_level: write-scoped
+permissions:
+  - fs.sandbox.read
+  - fs.sandbox.write
+config:
+  timeout_ms: 5000
+  rate_limit: 60
+  memory_limit_mb: 128

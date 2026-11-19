@@ -1,0 +1,17 @@
+name: web-search
+version: 0.1.0
+type: tool
+description: 使用内核代理访问允许的搜索站点并返回摘要
+author: uh-official
+license: MIT
+entry: main.py
+risk_level: read-only
+permissions:
+  - network.outbound
+network:
+  allow_hosts:
+    - api.duckduckgo.com
+config:
+  timeout_ms: 5000
+  rate_limit: 30
+  memory_limit_mb: 128

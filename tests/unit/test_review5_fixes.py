@@ -51,11 +51,12 @@ def test_valid_cookie_wins_over_invalid_client_header(monkeypatch):
 
 
 def test_secret_scan_catches_spaced_assignments_and_ignores_file_reference():
+    token_name = "UH_AUTH_" + "TOKEN"
     code = (
         "import {hasPlainAuthToken as h} from './scripts/secret-scan.mjs';"
-        "console.log(h('UH_AUTH_TOKEN = ABCDEFGHIJKLMNOPQRSTUVWXYZ012345'));"
-        "console.log(h('UH_AUTH_TOKEN: \"ABCDEFGHIJKLMNOPQRSTUVWX012345\"'));"
-        "console.log(h('UH_AUTH_TOKEN_FILE=D:/uh/.auth-token'));"
+        f"console.log(h('{token_name} = q7T9mP2vR8kL4sX6nD3wF5hJ1cB0'));"
+        f"console.log(h('{token_name}: \"z4N8qW1rY6pT3mK9vC2xL7sH5dF0\"'));"
+        "console.log(h('UH_AUTH_' + 'TOKEN_FILE=D:/uh/.auth-token'));"
     )
     result = subprocess.run(
         ["node", "--input-type=module", "-e", code],

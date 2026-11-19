@@ -628,14 +628,43 @@ class PluginDriver:
             _verify_signature(signature, digest, self.security, manifest.name)
         return manifest, digest, entries, signature
 
+    def _read_directory(self, source: Path, *, verify_signature: bool = True) -> tuple[PluginManifest, str, dict[str, bytes], dict[str, str] | None]:
+        if not source.is_dir():
+            raise PluginValidationError("验证源必须是插件目录或 .uhpkg 文件", detail={"source": str(source)})
+        entries: dict[str, bytes] = {}
+        for path in source.rglob("*"):
+            if path.is_dir():
+                continue
+            if path.is_symlink():
+                raise PluginValidationError("插件目录禁止符号链接", detail={"path": str(path.relative_to(source))})
+            name = _safe_member_name(path.relative_to(source).as_posix())
+            if name in entries:
+                raise PluginValidationError("插件目录包含重复路径", detail={"path": name})
+            entries[name] = path.read_bytes()
+        if "manifest.yaml" not in entries:
+            raise PluginValidationError("插件目录缺少 manifest.yaml", detail={"source": str(source)})
+        manifest = _validate_manifest(_read_manifest_from_bytes(entries["manifest.yaml"], str(source)), package_entries=set(entries))
+        content_entries = [(name, content) for name, content in entries.items() if name != SIGNATURE_FILE]
+        digest = _canonical_digest(content_entries)
+        signature = _read_signature(entries[SIGNATURE_FILE], str(source)) if SIGNATURE_FILE in entries else None
+        if verify_signature and self.security.signature_required and manifest.type not in self.security.signature_exceptions:
+            if signature is None:
+                raise PluginPolicyError("插件源缺少签名", detail={"plugin": manifest.name, "violation": "signature_missing"})
+            _verify_signature(signature, digest, self.security, manifest.name)
+        elif verify_signature and signature is not None:
+            _verify_signature(signature, digest, self.security, manifest.name)
+        return manifest, digest, entries, signature
+
     def validate(self, source: str | Path, *, no_verify: bool = False) -> dict[str, Any]:
         package = Path(source)
         if no_verify:
             if not self.security.allow_unverified:
                 raise PluginPolicyError("当前模式禁止跳过插件签名校验", detail={"violation": "signature_bypass"})
-            manifest, digest, entries, _ = self._read_package(package, verify_signature=False)
+            reader = self._read_directory if package.is_dir() else self._read_package
+            manifest, digest, entries, _ = reader(package, verify_signature=False)
         else:
-            manifest, digest, entries, _ = self._read_package(package)
+            reader = self._read_directory if package.is_dir() else self._read_package
+            manifest, digest, entries, _ = reader(package)
         return {**manifest.to_info(status="validated", package_sha256=digest, install_path=""), "files": sorted(entries), "dependencies": list(manifest.dependencies)}
 
     async def install(self, source: str | Path, *, no_verify: bool = False) -> dict[str, Any]:

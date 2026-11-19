@@ -1,0 +1,14 @@
+name: db-query
+version: 0.1.0
+type: tool
+description: 对插件私有 SQLite 数据库执行只读查询
+author: uh-official
+license: MIT
+entry: main.py
+risk_level: read-only
+permissions:
+  - fs.sandbox.read
+config:
+  timeout_ms: 5000
+  rate_limit: 60
+  memory_limit_mb: 128
