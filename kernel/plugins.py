@@ -44,6 +44,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from jsonschema import Draft7Validator, RefResolver
 
 from .logging import get_logger, log_event
+from .themes import validate_theme_asset_sizes, validate_theme_config, validate_theme_package
 
 log = get_logger("kernel.plugins")
 
@@ -652,20 +653,25 @@ class PluginDriver:
         except (OSError, zipfile.BadZipFile) as exc:
             raise PluginValidationError("插件包不是有效 ZIP", detail={"source": str(package)}) from exc
         with archive:
-            entries: dict[str, bytes] = {}
+            members: dict[str, zipfile.ZipInfo] = {}
             for info in archive.infolist():
                 if info.is_dir():
                     continue
                 name = _safe_member_name(info.filename)
-                if name in entries:
+                if name in members:
                     raise PluginValidationError("插件包包含重复路径", detail={"path": name})
                 mode = (info.external_attr >> 16) & 0o170000
                 if mode == 0o120000:
                     raise PluginValidationError("插件包禁止符号链接", detail={"path": name})
-                entries[name] = archive.read(info)
-        if "manifest.yaml" not in entries:
-            raise PluginValidationError("插件包缺少 manifest.yaml", detail={"source": str(package)})
-        manifest = _validate_manifest(_read_manifest_from_bytes(entries["manifest.yaml"], str(package)), package_entries=set(entries))
+                members[name] = info
+            if "manifest.yaml" not in members:
+                raise PluginValidationError("插件包缺少 manifest.yaml", detail={"source": str(package)})
+            raw_manifest = archive.read(members.pop("manifest.yaml"))
+            manifest = _validate_manifest(_read_manifest_from_bytes(raw_manifest, str(package)), package_entries=set(members) | {"manifest.yaml"})
+            if manifest.type == "theme":
+                self._validate_theme_sizes({name: info.file_size for name, info in members.items() if name != SIGNATURE_FILE})
+            entries = {"manifest.yaml": raw_manifest, **{name: archive.read(info) for name, info in members.items()}}
+        self._validate_theme_entries(manifest, entries)
         content_entries = [(name, content) for name, content in entries.items() if name != SIGNATURE_FILE]
         digest = _canonical_digest(content_entries)
         signature = _read_signature(entries[SIGNATURE_FILE], str(package)) if SIGNATURE_FILE in entries else None
@@ -680,19 +686,24 @@ class PluginDriver:
     def _read_directory(self, source: Path, *, verify_signature: bool = True) -> tuple[PluginManifest, str, dict[str, bytes], dict[str, str] | None]:
         if not source.is_dir():
             raise PluginValidationError("验证源必须是插件目录或 .uhpkg 文件", detail={"source": str(source)})
-        entries: dict[str, bytes] = {}
+        members: dict[str, Path] = {}
         for path in source.rglob("*"):
-            if path.is_dir():
-                continue
             if path.is_symlink():
                 raise PluginValidationError("插件目录禁止符号链接", detail={"path": str(path.relative_to(source))})
+            if path.is_dir():
+                continue
             name = _safe_member_name(path.relative_to(source).as_posix())
-            if name in entries:
+            if name in members:
                 raise PluginValidationError("插件目录包含重复路径", detail={"path": name})
-            entries[name] = path.read_bytes()
-        if "manifest.yaml" not in entries:
+            members[name] = path
+        if "manifest.yaml" not in members:
             raise PluginValidationError("插件目录缺少 manifest.yaml", detail={"source": str(source)})
-        manifest = _validate_manifest(_read_manifest_from_bytes(entries["manifest.yaml"], str(source)), package_entries=set(entries))
+        raw_manifest = members.pop("manifest.yaml").read_bytes()
+        manifest = _validate_manifest(_read_manifest_from_bytes(raw_manifest, str(source)), package_entries=set(members) | {"manifest.yaml"})
+        if manifest.type == "theme":
+            self._validate_theme_sizes({name: path.stat().st_size for name, path in members.items() if name != SIGNATURE_FILE})
+        entries = {"manifest.yaml": raw_manifest, **{name: path.read_bytes() for name, path in members.items()}}
+        self._validate_theme_entries(manifest, entries)
         content_entries = [(name, content) for name, content in entries.items() if name != SIGNATURE_FILE]
         digest = _canonical_digest(content_entries)
         signature = _read_signature(entries[SIGNATURE_FILE], str(source)) if SIGNATURE_FILE in entries else None
@@ -703,6 +714,24 @@ class PluginDriver:
         elif verify_signature and signature is not None:
             _verify_signature(signature, digest, self.security, manifest.name)
         return manifest, digest, entries, signature
+
+    @staticmethod
+    def _validate_theme_sizes(sizes: Mapping[str, int]) -> None:
+        try:
+            validate_theme_asset_sizes(sizes)
+        except ValueError as exc:
+            raise PluginValidationError("主题包校验失败", detail={"field": "theme", "reason": str(exc)}) from exc
+
+    @staticmethod
+    def _validate_theme_entries(manifest: PluginManifest, entries: Mapping[str, bytes]) -> None:
+        if manifest.type != "theme":
+            return
+        try:
+            assets = {name: content for name, content in entries.items() if name not in {"manifest.yaml", SIGNATURE_FILE}}
+            validate_theme_asset_sizes({name: len(content) for name, content in assets.items()})
+            validate_theme_package(manifest.config, assets)
+        except ValueError as exc:
+            raise PluginValidationError("主题包校验失败", detail={"field": "theme", "reason": str(exc)}) from exc
 
     def validate(self, source: str | Path, *, no_verify: bool = False) -> dict[str, Any]:
         package, cleanup = self._resolve_source(source)
@@ -835,10 +864,25 @@ class PluginDriver:
         unknown = sorted(set(requested) - allowed)
         if unknown:
             raise PluginValidationError("插件配置包含未知字段", detail={"plugin": name, "fields": unknown})
-        record.manifest.config.update(requested)
-        record.manifest.raw["config"] = dict(record.manifest.config)
+        manifest = _validate_manifest({**record.manifest.raw, "config": {**record.manifest.config, **requested}})
+        if manifest.type == "theme":
+            try:
+                validate_theme_config(manifest.config)
+            except ValueError as exc:
+                raise PluginValidationError("主题配置校验失败", detail={"field": "config", "reason": str(exc)}) from exc
+        old_config = dict(record.manifest.config)
+        old_timestamp = record.updated_at
+        record.manifest.config.update(manifest.config)
+        record.manifest.raw["config"] = dict(manifest.config)
         record.updated_at = _now()
-        self._save_registry()
+        try:
+            self._save_registry()
+        except OSError:
+            record.manifest.config.clear()
+            record.manifest.config.update(old_config)
+            record.manifest.raw["config"] = old_config
+            record.updated_at = old_timestamp
+            raise
         return record.info()
 
 

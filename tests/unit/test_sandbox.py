@@ -79,9 +79,38 @@ def test_process_plugin_loader_starts_and_stops_isolated_process(tmp_path):
     asyncio.run(exercise())
 
 
+def test_hook_runner_reaps_process_on_timeout(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    import os
+
+    plugin_dir = tmp_path / "sandbox-test"
+    plugin_dir.mkdir()
+    (plugin_dir / "main.py").write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    manifest = replace(_manifest(), type="hook", config={"timeout_ms": 200, "memory_limit_mb": 64})
+    runner = SandboxRunner(enforce=False, root=tmp_path)
+    if os.name != "nt":
+        monkeypatch.setattr("kernel.sandbox.shutil.which", lambda _: None)
+    launch = runner.launch
+    children = []
+
+    def track_launch(*args, **kwargs):
+        child = launch(*args, **kwargs)
+        children.append(child.process)
+        return child
+
+    monkeypatch.setattr(runner, "launch", track_launch)
+    with pytest.raises(SandboxError) as error:
+        asyncio.run(runner.run(manifest, plugin_dir, b"{}\n", capture_output=False))
+    assert error.value.code == "UH-CAP-5021"
+    assert children[0].poll() is not None
+
+
 def test_kernel_plugin_driver_uses_process_loader():
+    from kernel.hooks import HookPluginLoader
+
     app = create_app()
     assert isinstance(app.state.plugin_driver.loaders["tool"], ProcessPluginLoader)
     assert isinstance(app.state.plugin_driver.loaders["capability"], ProcessPluginLoader)
-    assert isinstance(app.state.plugin_driver.loaders["hook"], ProcessPluginLoader)
+    assert isinstance(app.state.plugin_driver.loaders["hook"], HookPluginLoader)
 

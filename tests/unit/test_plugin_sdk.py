@@ -1,5 +1,11 @@
 """M2-3 Python SDK 与 MCP 最小协议。"""
 import asyncio
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -65,4 +71,28 @@ def test_sdk_context_uses_sandbox_policy(tmp_path):
     outside = tmp_path.parent / "outside.txt"
     with pytest.raises(Exception):
         plugin.context.write_text(outside, "blocked")
+
+
+def test_official_file_tool_uses_inherited_stdio(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    source = tmp_path / "file"
+    shutil.copytree(root / "examples/plugins/official/file", source)
+    (source / "fixture.txt").write_text("中文文本", encoding="utf-8")
+    messages = [
+        {"id": 1, "method": "initialize"},
+        {"method": "notifications/initialized"},
+        {"id": 2, "method": "tools/list"},
+        {"id": 3, "method": "tools/call", "params": {"name": "read_file", "arguments": {"path": "fixture.txt"}}},
+    ]
+    input_data = "".join(json.dumps({"jsonrpc": "2.0", **message}) + "\n" for message in messages)
+    result = subprocess.run(
+        [sys.executable, str(source / "main.py")], cwd=source,
+        env={**os.environ, "PYTHONPATH": str(root)},
+        input=input_data.encode(), capture_output=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    initialized, listed, called = map(json.loads, result.stdout.splitlines())
+    assert initialized["result"]["serverInfo"]["name"] == "file"
+    assert {tool["name"] for tool in listed["result"]["tools"]} == {"read_file", "write_file"}
+    assert called["result"] == {"content": [{"type": "text", "text": "中文文本"}], "isError": False}
 

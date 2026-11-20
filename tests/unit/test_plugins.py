@@ -2,7 +2,9 @@
 import asyncio
 import base64
 import json
+import os
 import shutil
+import time
 import zipfile
 from pathlib import Path
 
@@ -50,6 +52,60 @@ def _make_package(path: Path, *, name: str = "hello", version: str = "1.0.0", si
                 ),
             )
     return public
+
+
+def test_signed_audit_hook_records_a_real_route_and_unsubscribes(monkeypatch, tmp_path):
+    template = Path(__file__).resolve().parents[2] / "examples/plugins/official/audit-log"
+    package = tmp_path / "audit.uhpkg"
+    entries = {name: (template / name).read_bytes() for name in ("manifest.yaml", "main.py")}
+    signing_key = Ed25519PrivateKey.generate()
+    public = _make_package(package, extra_entries=entries, signing_key=signing_key)
+    invalid = tmp_path / "invalid.uhpkg"
+    _make_package(invalid, signing_key=signing_key, extra_entries={
+        **entries,
+        "manifest.yaml": entries["manifest.yaml"].replace(b"kernel.route.decided", b"unknown.hook.event"),
+    })
+    trust_file = tmp_path / "trusted.json"
+    trust_file.write_text(json.dumps({"test": base64.b64encode(public).decode()}), encoding="utf-8")
+    plugin_root = tmp_path / "plugins"
+    monkeypatch.setenv("UH_PLUGIN_ROOT", str(plugin_root))
+    monkeypatch.setenv("UH_PLUGIN_REGISTRY", str(tmp_path / "plugins.json"))
+    monkeypatch.setenv("UH_PLUGIN_TRUSTED_KEYS_FILE", str(trust_file))
+    monkeypatch.setenv("UH_LOCAL_MODE", "1")
+    app = create_app()
+    if os.name != "nt":
+        # CI verifies the Hook protocol on a trusted fixture. Windows also
+        # exercises Job Object launch. bwrap integration needs its own host.
+        runner = app.state.plugin_driver.loaders["hook"].runner
+        runner.enforce = False
+        monkeypatch.setattr("kernel.sandbox.shutil.which", lambda _: None)
+
+    with TestClient(app) as client:
+        assert client.post("/api/v1/plugins", json={"source": str(invalid)}).status_code == 400
+        installed = client.post("/api/v1/plugins", json={"source": str(package)})
+        assert installed.status_code == 201, installed.text
+        log_path = plugin_root / "audit-log" / "0.1.0" / "audit.jsonl"
+        session = client.post("/api/v1/sessions").json()["data"]["session_id"]
+        task = client.post(f"/api/v1/sessions/{session}/messages", json={"content": "private audit fixture"}).json()["data"]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if log_path.exists() and (logged := log_path.read_text(encoding="utf-8")).endswith("\n"):
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("audit hook did not record a route decision")
+
+        entry = json.loads(logged.splitlines()[0])
+        assert entry["event"] == "kernel.route.decided"
+        assert entry["trace_id"] == task["trace_id"]
+        assert entry["event_id"] > 0
+        route_event = app.state.tasks.tasks[task["task_id"]]["event_buffer"][0]["event"]
+        assert entry["span_id"] == route_event["span_id"]
+        assert entry["payload"]["task_type"] == "chat"
+        assert "private audit fixture" not in logged
+        assert client.delete("/api/v1/plugins/audit-log").status_code == 200
+        assert app.state.hooks.names == ()
+        assert not log_path.exists()
 
 
 def test_signed_install_persists_and_uninstalls_without_residue(tmp_path):

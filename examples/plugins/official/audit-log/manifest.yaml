@@ -1,7 +1,7 @@
 name: audit-log
 version: 0.1.0
 type: hook
-description: 记录路由和插件生命周期审计摘要
+description: 记录任务路由和能力调用的审计元数据
 author: uh-official
 license: MIT
 entry: main.py

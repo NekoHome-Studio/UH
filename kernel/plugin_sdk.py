@@ -147,30 +147,45 @@ class MCPPluginServer:
 
     async def serve(self, reader: Any = None, writer: Any = None) -> None:
         reader = reader or asyncio.StreamReader()
+
+        async def send(data: bytes) -> None:
+            if writer is not None:
+                writer.write(data)
+                await writer.drain()
+
+        await self._serve(reader.readline, send)
+
+    async def _serve(
+        self, readline: Callable[[], Awaitable[bytes]], send: Callable[[bytes], Awaitable[None]],
+    ) -> None:
         while True:
-            raw = await reader.readline()
+            raw = await readline()
             if not raw:
                 return
             response = await self.handle(json.loads(raw.decode("utf-8")))
-            if response is not None and writer is not None:
-                writer.write((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
-                await writer.drain()
+            if response is not None:
+                await send((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
 def run_stdio(plugin: ToolPlugin) -> None:
     """Run a plugin over line-delimited JSON-RPC on stdin/stdout."""
 
-    async def run() -> None:
-        server = MCPPluginServer(plugin)
-        loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
-        transport, _ = await loop.connect_write_pipe(asyncio.streams.FlowControlMixin, sys.stdout.buffer)
-        writer = asyncio.StreamWriter(transport, protocol, reader, loop)
-        await server.serve(reader, writer)
+    async def readline() -> bytes:
+        # Inherited Windows stdio handles need not support overlapped I/O.
+        limit = 64 * 1024 + 1
+        line = await asyncio.to_thread(sys.stdin.buffer.readline, limit + 1)
+        if len(line) > limit:
+            raise ValueError("MCP stdio message exceeds 64 KiB")
+        return line
 
-    asyncio.run(run())
+    def write_and_flush(data: bytes) -> None:
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+
+    async def send(data: bytes) -> None:
+        await asyncio.to_thread(write_and_flush, data)
+
+    asyncio.run(MCPPluginServer(plugin)._serve(readline, send))
 
 
 __all__ = ["MCPPluginServer", "ToolContext", "ToolDefinition", "ToolPlugin", "run_stdio"]

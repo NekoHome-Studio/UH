@@ -225,7 +225,13 @@ class SandboxRunner:
         package_path = Path(package_dir).resolve()
         policy = self.policy(manifest, package_path)
         command = _entry_command(manifest, package_path)
-        env = os.environ.copy()
+        if manifest.type == "hook":
+            # Only inherit OS runtime variables. Hook children receive event
+            # metadata, and do not need credentials or application settings.
+            env = {name: os.environ[name] for name in ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE") if name in os.environ}
+            env["PATH"] = os.defpath
+        else:
+            env = os.environ.copy()
         env.update({
             "UH_SANDBOX_ROOT": str(package_path),
             "UH_SANDBOX_NETWORK": "allow" if "network.outbound" in policy.permissions else "deny",
@@ -240,7 +246,7 @@ class SandboxRunner:
 
         if os.name == "nt":
             return SandboxPlan(tuple(command), package_path, env, "windows", degraded=True, reason="M2 Windows FS/network enforcement is SDK/代理级")
-        if sys.platform == "darwin" and shutil.which("sandbox-exec"):
+        if manifest.type != "hook" and sys.platform == "darwin" and shutil.which("sandbox-exec"):
             return SandboxPlan(tuple(command), package_path, env, "macos")
         if sys.platform.startswith("linux") and shutil.which("bwrap"):
             wrapped = [
@@ -248,38 +254,57 @@ class SandboxRunner:
                 "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
                 "--ro-bind", "/lib", "/lib", "--bind", str(package_path), "/sandbox",
                 "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chdir", "/sandbox",
-            ] + command
+            ]
+            if manifest.type == "hook":
+                entry = Path(command[-1]).relative_to(package_path).as_posix()
+                command[-1] = "/sandbox/" + entry
+                if command[0] == sys.executable:
+                    command[0] = "/usr/bin/python3"
+                if Path("/lib64").exists():
+                    wrapped.extend(["--ro-bind", "/lib64", "/lib64"])
+                env["UH_SANDBOX_ROOT"] = "/sandbox"
+            wrapped += command
             return SandboxPlan(tuple(wrapped), package_path, env, "linux")
         if self.enforce:
             raise SandboxError("UH-KRN-2010", "当前平台没有可用的 M2 沙箱运行器", detail={"plugin": manifest.name, "violation": "sandbox_unavailable"})
         return SandboxPlan(tuple(command), package_path, env, sys.platform, degraded=True, reason="sandbox runner unavailable")
 
-    def launch(self, manifest: PluginManifest, package_dir: str | Path) -> SandboxProcess:
+    def launch(self, manifest: PluginManifest, package_dir: str | Path, *, capture_output: bool = True) -> SandboxProcess:
         plan = self.build_plan(manifest, package_dir)
         process = subprocess.Popen(
             list(plan.command),
             cwd=str(plan.cwd),
             env=dict(plan.env),
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
         )
-        job = _WindowsJob.create(manifest, process, int(manifest.config.get("memory_limit_mb", 256)), int(manifest.config.get("timeout_ms", 5000))) if os.name == "nt" else None
+        try:
+            job = _WindowsJob.create(manifest, process, int(manifest.config.get("memory_limit_mb", 256)), int(manifest.config.get("timeout_ms", 5000))) if os.name == "nt" else None
+        except Exception:
+            process.kill()
+            process.communicate()
+            raise
         return SandboxProcess(process, job)
 
-    async def run(self, manifest: PluginManifest, package_dir: str | Path, input_data: bytes | None = None) -> tuple[int, bytes, bytes]:
-        sandbox_process = self.launch(manifest, package_dir)
+    async def run(self, manifest: PluginManifest, package_dir: str | Path, input_data: bytes | None = None, *, capture_output: bool = True) -> tuple[int, bytes, bytes]:
+        sandbox_process = self.launch(manifest, package_dir, capture_output=capture_output)
         timeout_s = int(manifest.config.get("timeout_ms", 5000)) / 1000.0
+        communication = asyncio.create_task(asyncio.to_thread(sandbox_process.process.communicate, input_data))
         try:
-            stdout, stderr = await asyncio.wait_for(asyncio.to_thread(sandbox_process.process.communicate, input_data), timeout=timeout_s)
+            stdout, stderr = await asyncio.wait_for(asyncio.shield(communication), timeout=timeout_s)
         except asyncio.TimeoutError as exc:
             sandbox_process.terminate()
-            await asyncio.to_thread(sandbox_process.process.communicate)
+            await communication
             raise SandboxError("UH-CAP-5021", "插件执行超时", retryable=True, detail={"module": "plugin", "timeout_ms": int(timeout_s * 1000)}) from exc
+        except asyncio.CancelledError:
+            sandbox_process.terminate()
+            await communication
+            raise
         finally:
             sandbox_process.close()
-        return sandbox_process.process.returncode, stdout, stderr
+        return sandbox_process.process.returncode, stdout or b"", stderr or b""
 
 
 class _WindowsJob:
@@ -298,6 +323,10 @@ class _WindowsJob:
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
         handle = kernel32.CreateJobObjectW(None, None)
         if not handle:
             raise SandboxError("UH-KRN-2010", "无法创建 Windows Job Object", detail={"plugin": manifest.name, "violation": "job_object"})

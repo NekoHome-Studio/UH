@@ -221,7 +221,7 @@ class TaskManager:
             fut.set_result(decision)
         return req
 
-    async def _emit(self, task: dict[str, Any], event: str, payload: dict[str, Any], *, span_id: str | None = None) -> dict[str, Any] | None:
+    async def _emit(self, task: dict[str, Any], event: str, payload: dict[str, Any], *, span_id: str | None = None, audit_fields: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Map, retain, and broadcast one external event.
 
         Mapping happens at production time so a task remains replayable even
@@ -260,6 +260,17 @@ class TaskManager:
             task["event_buffer"][:] = [e for e in task["event_buffer"] if e["event"]["event"] != "delta"]  # 四审 P1-4：终态释放 delta bulk，保留结构事件（step_log 保全量步骤）
         for subscriber in tuple(task["subscribers"]):
             await subscriber.put(mapped)
+        if self.bus is not None and event not in {"tool.call", "tool.result"}:
+            if event == "task.created":
+                await self.bus.publish(
+                    "kernel.request.received", {"task_id": task_id, "session_id": task["session_id"]},
+                    trace_id=source.trace_id,
+                )
+            internal_payload = {"index": payload["index"]} if event == "delta" else dict(payload)
+            internal_payload.update(audit_fields or {}, task_id=task_id)
+            internal_payload.pop("confirmation_token", None)
+            internal_payload.pop("final_result", None)
+            await self.bus.publish(source.action, internal_payload, trace_id=source.trace_id, span_id=source.span_id)
         return mapped
 
     async def _run(self, task_id: str, session_id: str, content: str, mode: str, context: dict[str, Any] | None = None) -> None:
@@ -275,7 +286,10 @@ class TaskManager:
             retrieval_context = ""
             long_term_context = ""
             try:
-                await self._emit(t, "task.created", {"session_id": session_id, "mode": decision.task_type})
+                await self._emit(t, "task.created", {"session_id": session_id, "mode": decision.task_type}, audit_fields={
+                    "task_type": decision.task_type, "rule": decision.rule,
+                    "confidence": decision.confidence, "fallback": decision.fallback,
+                })
                 await self.memory.append(session_id, "user", content)
                 if decision.task_type == "workflow" and self.rpc is not None:
                     await self._run_workflow(t, q, session_id, content, context=context)
@@ -545,7 +559,9 @@ class TaskManager:
         try:
             result = method(content, session_id=session_id, metadata={"role": role}, memory_recall=True)
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            if result is not None and self.bus is not None:
+                await self.bus.publish("memory.record.write", {"session_id": session_id, "role": role}, trace_id=tracing.get_trace_id() or "")
         except Exception:
             # 长期记忆是增强能力；缺少密钥或后端异常不能阻断当前会话。
             return

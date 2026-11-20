@@ -35,10 +35,12 @@ from .orchestration import OrchestrationService, OrchestrationError
 from .confirmation import ConfirmationManager, ConfirmationError
 from .plugins import PluginDriver, PluginError
 from .sandbox import SandboxRunner
-from .hooks import HookManager
+from .hooks import HookManager, HookPluginLoader
+from .themes import clear_uninstalled_theme, installed_theme, select_theme, theme_asset, theme_catalog
 
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 _UI_STATE_MACHINE = Path(__file__).resolve().parent.parent / "ui" / "state-machine.js"
+_UI_THEMES = _UI.with_name("themes.js")
 
 setup_logging()
 log = get_logger("kernel.http")
@@ -83,6 +85,10 @@ class InstallRequest(BaseModel):
 
 class PluginConfigRequest(BaseModel):
     config: dict = {}
+
+
+class ThemeSelection(BaseModel):
+    name: str | None
 
 
 def _error_payload(
@@ -219,13 +225,17 @@ def create_app() -> FastAPI:
     app.state.sessions = set()  # 三审 P1-6：会话注册表（存在性校验）
     app.state.session_owners = {}
     app.state.idempotency_locks = {}
-    app.state.plugin_driver = PluginDriver(sandbox_runner=SandboxRunner())
+    app.state.bus = EventBus()
+    app.state.hooks = HookManager(app.state.bus)
+    sandbox_runner = SandboxRunner()
+    app.state.plugin_driver = PluginDriver(
+        sandbox_runner=sandbox_runner,
+        loaders={"hook": HookPluginLoader(app.state.hooks, sandbox_runner)},
+    )
     # Compatibility snapshot for callers that inspected the M1 placeholder.
     app.state.plugins = app.state.plugin_driver.list()
     app.state.client_identity_secret = _read_client_identity_secret()
     app.state.memory = create_short_term_memory()
-    app.state.bus = EventBus()
-    app.state.hooks = HookManager(app.state.bus)
     app.state.guard = StorageGuard()
     app.state.guard.declare("retrieval.search", {"retrieval"})  # 提前声明，供检索存储运行时归属校验
     app.state.guard.declare("memory.long_term", {"long_term"})  # 三审 N9：长期记忆命名空间
@@ -331,6 +341,10 @@ def create_app() -> FastAPI:
             app.state.retrieval_ready = False
             log_event(log, logging.WARNING, "capability.module.degraded", module="retrieval", reason=str(exc))
 
+    @app.on_event("shutdown")
+    async def stop_hooks() -> None:
+        await app.state.hooks.shutdown()
+
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
         fields = []
@@ -367,7 +381,7 @@ def create_app() -> FastAPI:
             # 二审 N1/N2 修复：默认值与 WS 对齐（UH_LOCAL_MODE 无默认，单设 UH_AUTH_REQUIRED=1 即生效）；
             # 鉴权覆盖所有业务端点含遗留别名（/memory/*、/plugins），仅 ops 与 UI 静态豁免。
             auth_required = _truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
-            _exempt = request.url.path in {"/health", "/ready", "/metrics", "/", "/static/state-machine.js", "/docs", "/openapi.json", "/redoc"}  # 三审 N10：docs/openapi 豁免供 SDK 生成
+            _exempt = request.url.path in {"/health", "/ready", "/metrics", "/", "/static/state-machine.js", "/static/themes.js", "/docs", "/openapi.json", "/redoc"}
             if auth_required and not _exempt:
                 expected = _read_auth_token()
                 # 与 WS 一致：Bearer 头优先，亦接受 ?token= 查询参数（本地/测试便利）。
@@ -563,11 +577,13 @@ def create_app() -> FastAPI:
     @app.delete("/plugins/{name}")
     @app.delete("/api/v1/plugins/{name}")
     async def uninstall_plugin(name: str):
+        driver = app.state.plugin_driver
         try:
-            result = await app.state.plugin_driver.uninstall(name)
+            result = await driver.uninstall(name)
         except PluginError as exc:
             return _plugin_error(exc)
-        app.state.plugins = app.state.plugin_driver.list()
+        app.state.plugins = driver.list()
+        clear_uninstalled_theme(driver, name)
         return _envelope(result)
 
     @app.patch("/plugins/{name}/config")
@@ -579,6 +595,28 @@ def create_app() -> FastAPI:
             return _plugin_error(exc)
         app.state.plugins = app.state.plugin_driver.list()
         return _envelope(result)
+
+    @app.get("/api/v1/themes")
+    async def list_themes():
+        return _envelope(theme_catalog(app.state.plugin_driver))
+
+    @app.put("/api/v1/themes/active")
+    async def apply_theme(req: ThemeSelection):
+        driver = app.state.plugin_driver
+        try:
+            select_theme(driver, req.name)
+        except (KeyError, ValueError):
+            return _plugin_error(PluginError("UH-USR-1003", "主题不存在或不可用", status_code=404))
+        return _envelope({"active": req.name})
+
+    @app.get("/api/v1/themes/{name}/assets/{asset:path}")
+    async def get_theme_asset(name: str, asset: str):
+        try:
+            record = installed_theme(app.state.plugin_driver, name)
+            content, mime = theme_asset(record, "assets/" + asset)
+        except (KeyError, ValueError, OSError):
+            return _plugin_error(PluginError("UH-USR-1003", "主题资源不存在或不可用", status_code=404))
+        return Response(content, media_type=mime, headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
 
     @app.delete("/memory/long-term")
     @app.delete("/api/v1/memory/long-term")
@@ -623,6 +661,10 @@ def create_app() -> FastAPI:
     @app.get("/static/state-machine.js", include_in_schema=False)
     async def state_machine_asset():
         return FileResponse(_UI_STATE_MACHINE, media_type="application/javascript")
+
+    @app.get("/static/themes.js", include_in_schema=False)
+    async def themes_asset():
+        return FileResponse(_UI_THEMES, media_type="application/javascript")
 
     @app.post("/api/v1/sessions", status_code=201)
     async def create_session(response: Response, request: Request):

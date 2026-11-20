@@ -1,0 +1,17 @@
+name: theme-light
+version: 0.1.0
+type: theme
+description: 适用于 UH! Web 的浅色主题
+author: uh-official
+license: MIT
+permissions: []
+config:
+  css_variables:
+    --uh-bg-primary: '#f8fafc'
+    --uh-bg-surface: '#ffffff'
+    --uh-fg-primary: '#172033'
+    --uh-fg-muted: '#475569'
+    --uh-accent: '#1d4ed8'
+    --uh-accent-text: '#ffffff'
+    --uh-radius: '8px'
+    --uh-spacing: '16px'

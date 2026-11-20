@@ -1,9 +1,9 @@
 name: contracts
 on:
   push:
-    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "pyproject.toml", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", ".github/workflows/contracts.yml"]
+    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", ".github/workflows/contracts.yml"]
   pull_request:
-    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "pyproject.toml", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", ".github/workflows/contracts.yml"]
+    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", ".github/workflows/contracts.yml"]
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -40,5 +40,13 @@ jobs:
         run: npm install ajv@8 js-yaml@4
       - name: 单元测试（审查修复：CI 必须跑 pytest）
         run: python -m pytest -q
+      - name: 校验官方插件源码示例
+        env:
+          UH_LOCAL_MODE: "1"
+          UH_PLUGIN_ALLOW_UNVERIFIED: "1"
+        run: |
+          for plugin in web-search file db-query theme-light audit-log; do
+            python -m kernel.cli plugin validate "examples/plugins/official/$plugin" --no-verify
+          done
       - name: 契约门禁 verify-all --full（含运行时双向 + OpenAPI/AsyncAPI 官方解析，三审 N8）
         run: node scripts/verify-all.mjs --full

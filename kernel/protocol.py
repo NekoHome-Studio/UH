@@ -60,11 +60,14 @@ class EventBus:
     def subscribe(self, pattern: str, handler: Callable[[Envelope], Awaitable[None]]) -> None:
         self._subs.append((pattern, handler))
 
+    def unsubscribe(self, pattern: str, handler: Callable[[Envelope], Awaitable[None]]) -> None:
+        self._subs.remove((pattern, handler))
+
     async def publish(self, name: str, payload: dict, trace_id: str = "", span_id: str = "", from_: str = "kernel", parent_span_id: str | None = None) -> Envelope:
         validate_event_name(name)
         self._seq += 1
         env = Envelope(action=name, payload=payload, trace_id=trace_id, span_id=span_id or ("sp_" + secrets.token_hex(4)), from_=from_, to="bus", parent_span_id=parent_span_id, event_id=self._seq)  # 四审：自动生成 span 供溯源
-        for pattern, handler in self._subs:
+        for pattern, handler in tuple(self._subs):
             if fnmatch.fnmatchcase(name, pattern):
                 try:
                     await handler(env)
