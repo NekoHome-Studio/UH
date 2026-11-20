@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -115,6 +116,25 @@ def test_trusted_keys_file_is_loaded_for_production(monkeypatch, tmp_path):
     monkeypatch.setenv("UH_PLUGIN_TRUSTED_KEYS_FILE", str(key_file))
     config = PluginSecurityConfig.from_env()
     assert "official" in config.trusted_keys
+
+
+def test_market_source_resolves_from_local_market_root(monkeypatch, tmp_path):
+    package = tmp_path / "hello.uhpkg"
+    _make_package(package)
+    market = tmp_path / "market"
+    market.mkdir()
+    shutil.copy2(package, market / "hello@1.0.0.uhpkg")
+    monkeypatch.setenv("UH_PLUGIN_MARKET_ROOT", str(market))
+    driver = PluginDriver(security=PluginSecurityConfig(allow_unverified=True))
+    result = driver.validate("market://hello@1.0.0", no_verify=True)
+    assert result["name"] == "hello"
+
+
+def test_git_source_host_allowlist_is_enforced(tmp_path):
+    driver = PluginDriver(security=PluginSecurityConfig(allow_unverified=True))
+    with pytest.raises(PluginError) as raised:
+        driver.validate("git+https://evil.example/uh/plugin.git", no_verify=True)
+    assert raised.value.code == "UH-KRN-2010"
 
 
 def test_plugin_crashes_restart_three_times_then_quarantine(tmp_path):

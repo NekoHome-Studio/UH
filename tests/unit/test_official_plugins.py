@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_official_tools_validate_in_local_mode():
     driver = PluginDriver(security=PluginSecurityConfig(allow_unverified=True))
-    for name in ("web-search", "file", "db-query"):
+    for name in ("web-search", "file", "db-query", "audit-log"):
         result = driver.validate(ROOT / "examples" / "plugins" / "official" / name, no_verify=True)
         assert result["status"] == "validated"
-        assert result["type"] == "tool"
+        assert result["type"] in {"tool", "hook"}
 

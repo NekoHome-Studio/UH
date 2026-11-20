@@ -35,6 +35,7 @@ from .orchestration import OrchestrationService, OrchestrationError
 from .confirmation import ConfirmationManager, ConfirmationError
 from .plugins import PluginDriver, PluginError
 from .sandbox import SandboxRunner
+from .hooks import HookManager
 
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 _UI_STATE_MACHINE = Path(__file__).resolve().parent.parent / "ui" / "state-machine.js"
@@ -224,6 +225,7 @@ def create_app() -> FastAPI:
     app.state.client_identity_secret = _read_client_identity_secret()
     app.state.memory = create_short_term_memory()
     app.state.bus = EventBus()
+    app.state.hooks = HookManager(app.state.bus)
     app.state.guard = StorageGuard()
     app.state.guard.declare("retrieval.search", {"retrieval"})  # 提前声明，供检索存储运行时归属校验
     app.state.guard.declare("memory.long_term", {"long_term"})  # 三审 N9：长期记忆命名空间

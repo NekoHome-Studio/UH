@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from datetime import datetime, timezone
 from functools import total_ordering
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Protocol
+from urllib.parse import urlparse
 
 import yaml
 from cryptography.exceptions import InvalidSignature
@@ -587,6 +589,53 @@ class PluginDriver:
             raise PluginValidationError("插件类型没有对应加载器", detail={"type": plugin_type})
         return loader
 
+    def _resolve_source(self, source: str | Path) -> tuple[Path, Any]:
+        """Resolve local, market:// and git+https:// sources without shell evaluation."""
+        raw = str(source)
+        local = Path(raw)
+        if local.exists():
+            return local.resolve(), lambda: None
+        if raw.startswith("market://"):
+            reference = raw[len("market://"):]
+            if "@" not in reference:
+                raise PluginValidationError("market 来源须为 market://name@version", detail={"source": raw})
+            name, version = reference.rsplit("@", 1)
+            root = Path(os.environ.get("UH_PLUGIN_MARKET_ROOT", ".uh/market")).resolve()
+            candidates = (
+                root / f"{name}@{version}.uhpkg",
+                root / f"{name}-{version}.uhpkg",
+                root / name / version,
+            )
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate, lambda: None
+            raise PluginValidationError("market 插件不存在", detail={"source": raw, "market_root": str(root)})
+        if raw.startswith("git+https://"):
+            url = raw[len("git+"):]
+            parsed = urlparse(url)
+            allowed = {item.strip().lower() for item in os.environ.get("UH_PLUGIN_GIT_HOSTS", "github.com").split(",") if item.strip()}
+            if parsed.scheme != "https" or not parsed.hostname or parsed.hostname.lower() not in allowed:
+                raise PluginPolicyError("git 来源主机不在白名单", detail={"source": raw, "violation": "git.host"})
+            checkout = Path(tempfile.mkdtemp(prefix="uh-plugin-git-"))
+            try:
+                subprocess.run(["git", "clone", "--depth", "1", "--", url, str(checkout)], check=True, capture_output=True, text=True, timeout=120)
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                shutil.rmtree(checkout, ignore_errors=True)
+                raise PluginValidationError("git 插件源获取失败", detail={"source": raw}) from exc
+            candidates = [checkout]
+            candidates.extend(path for path in checkout.iterdir() if path.is_dir() and (path / "manifest.yaml").exists())
+            for candidate in candidates:
+                if (candidate / "manifest.yaml").exists():
+                    return candidate, lambda: shutil.rmtree(checkout, ignore_errors=True)
+            shutil.rmtree(checkout, ignore_errors=True)
+            raise PluginValidationError("git 插件源缺少 manifest.yaml", detail={"source": raw})
+        raise PluginValidationError("安装源不存在或格式不支持", detail={"source": raw})
+
+    @staticmethod
+    def _read_source(source: Path, *, verify_signature: bool, driver: "PluginDriver"):
+        reader = driver._read_directory if source.is_dir() else driver._read_package
+        return reader(source, verify_signature=verify_signature)
+
     def _check_dependencies(self, manifest: PluginManifest) -> None:
         for dependency in manifest.dependencies:
             name = str(dependency.get("name", ""))
@@ -656,22 +705,29 @@ class PluginDriver:
         return manifest, digest, entries, signature
 
     def validate(self, source: str | Path, *, no_verify: bool = False) -> dict[str, Any]:
-        package = Path(source)
-        if no_verify:
-            if not self.security.allow_unverified:
-                raise PluginPolicyError("当前模式禁止跳过插件签名校验", detail={"violation": "signature_bypass"})
-            reader = self._read_directory if package.is_dir() else self._read_package
-            manifest, digest, entries, _ = reader(package, verify_signature=False)
-        else:
-            reader = self._read_directory if package.is_dir() else self._read_package
-            manifest, digest, entries, _ = reader(package)
-        return {**manifest.to_info(status="validated", package_sha256=digest, install_path=""), "files": sorted(entries), "dependencies": list(manifest.dependencies)}
+        package, cleanup = self._resolve_source(source)
+        try:
+            if no_verify:
+                if not self.security.allow_unverified:
+                    raise PluginPolicyError("当前模式禁止跳过插件签名校验", detail={"violation": "signature_bypass"})
+                manifest, digest, entries, _ = self._read_source(package, verify_signature=False, driver=self)
+            else:
+                manifest, digest, entries, _ = self._read_source(package, verify_signature=True, driver=self)
+            return {**manifest.to_info(status="validated", package_sha256=digest, install_path=""), "files": sorted(entries), "dependencies": list(manifest.dependencies)}
+        finally:
+            cleanup()
 
     async def install(self, source: str | Path, *, no_verify: bool = False) -> dict[str, Any]:
-        package = Path(source)
+        original_source = str(source)
+        package, cleanup_source = self._resolve_source(source)
         if no_verify and not self.security.allow_unverified:
+            cleanup_source()
             raise PluginPolicyError("当前模式禁止跳过插件签名校验", detail={"violation": "signature_bypass"})
-        manifest, digest, entries, _ = self._read_package(package, verify_signature=not no_verify)
+        try:
+            manifest, digest, entries, _ = self._read_source(package, verify_signature=not no_verify, driver=self)
+        except Exception:
+            cleanup_source()
+            raise
         if no_verify:
             # _read_package 已经做了签名校验路径判断，显式 bypass 只允许在本地开发配置中使用。
             pass
@@ -699,7 +755,7 @@ class PluginDriver:
             if target.exists():
                 raise PluginValidationError("插件安装目录已存在", detail={"plugin": manifest.name})
             staging.rename(target)
-            record = PluginRecord(manifest, "installed", digest, str(target), str(package), _now(), _now())
+            record = PluginRecord(manifest, "installed", digest, str(target), original_source, _now(), _now())
             self.records[manifest.name] = record
             self._save_registry()
             try:
@@ -721,6 +777,7 @@ class PluginDriver:
                 shutil.rmtree(staging, ignore_errors=True)
             if staging_parent.exists() and not any(staging_parent.iterdir()):
                 staging_parent.rmdir()
+            cleanup_source()
 
     async def _deactivate_loader(self, loader: PluginLoader, manifest: PluginManifest, path: Path, *, force: bool = False) -> bool:
         try:

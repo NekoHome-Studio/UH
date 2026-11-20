@@ -1,0 +1,15 @@
+name: audit-log
+version: 0.1.0
+type: hook
+description: 记录路由和插件生命周期审计摘要
+author: uh-official
+license: MIT
+entry: main.py
+permissions:
+  - fs.sandbox.write
+config:
+  timeout_ms: 1000
+  memory_limit_mb: 64
+  events:
+    - kernel.route.decided
+    - capability.module.invoked
