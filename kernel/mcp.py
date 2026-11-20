@@ -144,16 +144,20 @@ class StdioTransport:
         child_env = os.environ.copy()
         if self.env:
             child_env.update(self.env)
-        self.process = await asyncio.create_subprocess_exec(
+        self.process = await self._spawn(argv, child_env)
+        self._reader_task = asyncio.create_task(self._read_loop())
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+    async def _spawn(self, argv: list[str], env: dict[str, str]) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=child_env,
+            env=env,
             cwd=self.cwd,
+            limit=MAX_RESPONSE_BYTES * 2,
         )
-        self._reader_task = asyncio.create_task(self._read_loop())
-        self._stderr_task = asyncio.create_task(self._drain_stderr())
 
     async def _drain_stderr(self) -> None:
         # 二审 N13：消费 stderr 防缓冲区满导致子进程阻塞死锁。
@@ -190,6 +194,8 @@ class StdioTransport:
                     message = json.loads(line.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     continue
+                if not isinstance(message, dict):
+                    continue
                 request_id = message.get("id")
                 if request_id is not None and request_id in self._pending:
                     future = self._pending.pop(request_id)
@@ -197,6 +203,8 @@ class StdioTransport:
                         future.set_result(message)
         except asyncio.CancelledError:
             raise
+        except (OSError, ValueError):
+            pass
         finally:
             error = MCPError(module_error_code(), "MCP stdio server 连接已关闭", retryable=True, detail={"module": "tool"})
             for future in self._pending.values():
@@ -242,9 +250,14 @@ class StdioTransport:
             if self.process.stdin:
                 self.process.stdin.close()
             if self.process.returncode is None:
-                self.process.terminate()
-                with contextlib.suppress(asyncio.TimeoutError):
+                with contextlib.suppress(ProcessLookupError):
+                    self.process.terminate()
+                try:
                     await asyncio.wait_for(self.process.wait(), timeout=1)
+                except asyncio.TimeoutError:
+                    with contextlib.suppress(ProcessLookupError):
+                        self.process.kill()
+                    await self.process.wait()
             self.process = None
 
 
@@ -315,6 +328,7 @@ class MCPHost:
         max_retries: int | None = None,
         backoff_base_s: float = 0.1,
         bus: EventBus | None = None,
+        sandbox_audit: Callable[[dict[str, Any], str], None] | None = None,
     ) -> None:
         if transport is None:
             if command is not None:
@@ -328,6 +342,7 @@ class MCPHost:
         self.max_retries = max_retries if max_retries is not None else int(os.environ.get("UH_MCP_MAX_RETRIES", str(DEFAULT_MAX_RETRIES)))
         self.backoff_base_s = backoff_base_s
         self.bus = bus
+        self.sandbox_audit = sandbox_audit
         self._request_ids = itertools.count(1)
         self._connected = False
         self._tools: dict[str, _ToolInfo] = {}
@@ -370,6 +385,11 @@ class MCPHost:
                 retry_after_ms=2000,
                 detail={"module": "tool", "timeout_ms": timeout_ms},
             ) from exc
+        except asyncio.CancelledError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+            raise
         except Exception as exc:
             if isinstance(exc, MCPError):
                 raise
@@ -412,7 +432,7 @@ class MCPHost:
             )
         return tools
 
-    async def _request_call(self, name: str, arguments: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
+    async def _request_call(self, name: str, arguments: dict[str, Any], timeout_ms: int, trace_id: str) -> dict[str, Any]:
         try:
             response = await self._request("tools/call", {"name": name, "arguments": arguments}, timeout_ms=timeout_ms)
         except MCPError as exc:
@@ -423,7 +443,19 @@ class MCPHost:
         result = response.get("result")
         if not isinstance(result, dict):
             raise MCPError(module_error_code(), "MCP tools/call 响应无效", retryable=True, detail={"module": "tool", "tool_name": name})
+        meta = result.get("_meta")
+        denials = meta.pop("uh.sandbox.denials", []) if isinstance(meta, dict) else []
+        if self.sandbox_audit and isinstance(denials, list):
+            for denial in denials:
+                if isinstance(denial, dict):
+                    self.sandbox_audit(denial, trace_id)
         if result.get("isError"):
+            structured = result.get("structuredContent")
+            error = structured.get("error") if isinstance(structured, dict) else None
+            if isinstance(error, dict) and error.get("code") == "UH-KRN-2010":
+                detail = error.get("detail")
+                fields = {key: detail[key] for key in ("permission", "violation") if isinstance(detail, dict) and isinstance(detail.get(key), str)}
+                raise MCPError("UH-KRN-2010", "插件沙箱拒绝工具操作", detail={"module": "tool", "tool_name": name, **fields})
             raise MCPError(module_error_code(), f"工具 {name} 返回错误", retryable=True, detail={"module": "tool", "tool_name": name})
         return result
 
@@ -503,6 +535,9 @@ class MCPHost:
             risk = "read-only" if idem else "write-scoped"
         return bool(idem), str(risk), timeout_ms
 
+    def tool_timeout_ms(self, name: str) -> int:
+        return self._tool_policy(name, None, None, None)[2]
+
     async def call_tool(
         self,
         name: str,
@@ -558,7 +593,7 @@ class MCPHost:
         last_error: MCPError | None = None
         for attempt in range(retries + 1):
             try:
-                result = self._truncate_result(await self._request_call(name, arguments, timeout))
+                result = self._truncate_result(await self._request_call(name, arguments, timeout, trace_id))
                 if self.bus:
                     await self.bus.publish("mcp.tool.result", {
                         "call_id": call_id, "tool_name": name, "status": "ok", "truncated": result.get("truncated", False),
@@ -601,7 +636,7 @@ class MCPHost:
 
             async def handler(req: Envelope, tool_name: str = name, tool_manifest_: dict[str, Any] = tool_manifest or {}) -> Envelope:
                 try:
-                    result = await self.call_tool(tool_name, req.payload.get("arguments", req.payload), manifest=tool_manifest_, trace_id=req.trace_id, call_id=req.payload.get("call_id"))
+                    result = await self.call_tool(tool_name, req.payload.get("arguments", req.payload), manifest=tool_manifest_, trace_id=req.trace_id, call_id=req.payload.get("call_id"), task_id=req.payload.get("task_id", ""))
                     return Envelope(action=req.action, payload=result, trace_id=req.trace_id, from_=req.to, to=req.from_)
                 except MCPError as exc:
                     return Envelope(action=req.action, payload={"degraded": True, "error_code": exc.code, "error": exc.to_dict()}, trace_id=req.trace_id, from_=req.to, to=req.from_)

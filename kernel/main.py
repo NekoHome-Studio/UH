@@ -227,13 +227,6 @@ def create_app() -> FastAPI:
     app.state.idempotency_locks = {}
     app.state.bus = EventBus()
     app.state.hooks = HookManager(app.state.bus)
-    sandbox_runner = SandboxRunner()
-    app.state.plugin_driver = PluginDriver(
-        sandbox_runner=sandbox_runner,
-        loaders={"hook": HookPluginLoader(app.state.hooks, sandbox_runner)},
-    )
-    # Compatibility snapshot for callers that inspected the M1 placeholder.
-    app.state.plugins = app.state.plugin_driver.list()
     app.state.client_identity_secret = _read_client_identity_secret()
     app.state.memory = create_short_term_memory()
     app.state.guard = StorageGuard()
@@ -242,6 +235,14 @@ def create_app() -> FastAPI:
     app.state.long_term_memory = create_long_term_memory(guard=app.state.guard)
     app.state.llm = create_llm_client()
     app.state.rpc = CapabilityRegistry(app.state.bus, app.state.guard)
+    sandbox_runner = SandboxRunner()
+    app.state.plugin_driver = PluginDriver(
+        sandbox_runner=sandbox_runner,
+        loaders={"hook": HookPluginLoader(app.state.hooks, sandbox_runner)},
+        capability_registry=app.state.rpc,
+    )
+    # Compatibility snapshot for callers that inspected the M1 placeholder.
+    app.state.plugins = app.state.plugin_driver.list()
     app.state.retrieval_server = RetrievalMCPServer(guard=app.state.guard)
     if os.environ.get("UH_RETRIEVAL_MCP_COMMAND"):
         app.state.retrieval_host = MCPHost.from_stdio(os.environ["UH_RETRIEVAL_MCP_COMMAND"], bus=app.state.bus)
@@ -259,7 +260,18 @@ def create_app() -> FastAPI:
             )
     except Exception:
         pass
-    app.state.orchestration = OrchestrationService(retrieval=app.state.retrieval_server.service, llm=app.state.llm)
+
+    async def _workflow_tool(name, arguments, *, trace_id, task_id):
+        host = app.state.plugin_driver.tool_host(name)
+        if host is None:
+            raise OrchestrationError("UH-USR-1003", "插件工具不可用", detail={"module": "tool", "tool_name": name})
+        response = await app.state.rpc.call(
+            f"mcp.tool.{name}", {"arguments": arguments, "task_id": task_id}, trace_id=trace_id,
+            deadline_ms=host.tool_timeout_ms(name) + 1000,
+        )
+        return response.payload
+
+    app.state.orchestration = OrchestrationService(retrieval=app.state.retrieval_server.service, llm=app.state.llm, tool_call=_workflow_tool)
 
     async def _llm_cap(req):
         msgs = req.payload.get("messages") or [{"role": "user", "content": req.payload.get("content", "")}]
@@ -287,6 +299,7 @@ def create_app() -> FastAPI:
                 req.payload.get("task_id", ""), req.payload.get("content", ""), trace_id=req.trace_id,
                 emit=req.payload.get("emit"), deadline_ms=req.deadline_ms,
                 resume=bool(req.payload.get("resume", False)), checkpoint_id=req.payload.get("checkpoint_id"),
+                tool=req.payload.get("tool"),
             )
             return Envelope(action=req.action, payload=result, trace_id=req.trace_id, from_=req.to, to=req.from_)
         except OrchestrationError as exc:
@@ -296,7 +309,7 @@ def create_app() -> FastAPI:
     app.state.rpc.register("retrieval.search", _retrieval_cap, storage={"retrieval"})
     app.state.rpc.register("orchestration.run", _orchestration_cap, storage={"orchestration"})
     app.state.confirmations = ConfirmationManager()
-    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory, app.state.confirmations, bus=app.state.bus)
+    app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory, app.state.confirmations, bus=app.state.bus, plugin_host=lambda name: app.state.plugin_driver.tool_host(name))
 
     def _request_client_id(request: Request) -> str | None:
         strict = _strict_client_identity()
@@ -331,7 +344,7 @@ def create_app() -> FastAPI:
         return _issue_client_identity(client_id, app.state.client_identity_secret)
 
     @app.on_event("startup")
-    async def register_retrieval_tools() -> None:
+    async def start_capabilities() -> None:
         # MCP tools 通过 Host 注册到能力目录；主链路的兼容别名由上面的
         # retrieval.search handler 提供，以保持 M1-1 TaskManager 契约不变。
         try:
@@ -340,10 +353,14 @@ def create_app() -> FastAPI:
         except Exception as exc:
             app.state.retrieval_ready = False
             log_event(log, logging.WARNING, "capability.module.degraded", module="retrieval", reason=str(exc))
+        await app.state.plugin_driver.restore_active()
+        app.state.plugins = app.state.plugin_driver.list()
 
     @app.on_event("shutdown")
-    async def stop_hooks() -> None:
+    async def stop_capabilities() -> None:
+        await app.state.plugin_driver.shutdown()
         await app.state.hooks.shutdown()
+        await app.state.retrieval_host.close()
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):

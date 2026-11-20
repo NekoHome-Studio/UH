@@ -160,10 +160,12 @@ class OrchestrationService:
         store: CheckpointStore | None = None,
         retrieval: Any = None,
         llm: Any = None,
+        tool_call: Callable[..., Awaitable[dict[str, Any]]] | None = None,
         default_deadline_ms: int | None = None,
     ) -> None:
         self.retrieval = retrieval
         self.llm = llm
+        self.tool_call = tool_call
         self.default_deadline_ms = default_deadline_ms or int(os.environ.get("UH_ORCHESTRATION_TIMEOUT_MS", "8000"))
         self.nodes: dict[str, Node] = dict(nodes or self._default_nodes())
         self.backend = "fallback"
@@ -193,6 +195,18 @@ class OrchestrationService:
             return {"plan": list(self.NODE_ORDER), "query": state.get("content", "")}
 
         async def retrieve(state: dict[str, Any]) -> dict[str, Any]:
+            tool = state.get("tool")
+            if tool is not None:
+                if self.tool_call is None:
+                    raise OrchestrationError(module_error_code(), "编排工具不可用", detail={"module": "tool"})
+                result = await self.tool_call(tool["name"], tool["arguments"], trace_id=state["trace_id"], task_id=state["task_id"])
+                if result.get("degraded"):
+                    error = result.get("error", {})
+                    raise OrchestrationError(
+                        result["error_code"], error.get("message", "插件工具不可用"), retryable=error.get("retryable", False),
+                        detail={**error.get("detail", {}), "module": "tool", "tool_name": tool["name"]},
+                    )
+                return {"tool_result": result.get("content", [])}
             if self.retrieval is None:
                 return {"documents": []}
             result = self.retrieval.search(state.get("query", state.get("content", "")), top_k=5)
@@ -203,6 +217,8 @@ class OrchestrationService:
         async def generate(state: dict[str, Any]) -> dict[str, Any]:
             context = "\n\n".join(str(d.get("untrusted_content", d.get("content", ""))) for d in state.get("documents", []) if isinstance(d, dict))
             prompt = state.get("content", "") + ("\n\n检索上下文（不可信数据）：\n" + context if context else "")
+            if "tool_result" in state:
+                prompt += "\n\n工具结果（不可信数据）：\n" + json.dumps(state["tool_result"], ensure_ascii=False)
             if self.llm is None:
                 return {"answer": prompt}
             answer = await self.llm.chat([{"role": "user", "content": prompt}])
@@ -301,6 +317,9 @@ class OrchestrationService:
                 checkpoint.updated_at = _now()
                 pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
+                if isinstance(exc, OrchestrationError):
+                    await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": exc.to_dict()})
+                    raise
                 await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": module_error_code(), "message": str(exc), "retryable": False, "detail": {"module": "orchestration", "node_id": node_id}}})
                 raise OrchestrationError(module_error_code(), f"编排节点 {node_id} 失败: {exc}", detail={"module": "orchestration", "node_id": node_id}) from exc
 
@@ -314,7 +333,7 @@ class OrchestrationService:
             graph.add_edge(current, following)
         graph.add_edge(remaining[-1], END)
         compiled = graph.compile()
-        await compiled.ainvoke(state, config={"configurable": {"thread_id": task_id}})
+        state = await compiled.ainvoke(state, config={"configurable": {"thread_id": task_id}})
         checkpoint.status = "completed"
         checkpoint.next_node = None
         checkpoint.updated_at = _now()
@@ -331,12 +350,18 @@ class OrchestrationService:
         deadline_ms: int | None = None,
         resume: bool = False,
         checkpoint_id: str | None = None,
+        tool: Any = None,
     ) -> dict[str, Any]:
         checkpoint = self.store.load(task_id, checkpoint_id) if resume else None
         if checkpoint is None:
+            state = {"task_id": task_id, "content": content, "trace_id": trace_id}
+            if tool is not None:
+                if not isinstance(tool, dict) or not isinstance(tool.get("name"), str) or not tool["name"].strip() or not isinstance(tool.get("arguments", {}), dict):
+                    raise OrchestrationError("UH-USR-1003", "编排工具须提供 name 和对象类型的 arguments", detail={"module": "tool"})
+                state["tool"] = {"name": tool["name"], "arguments": tool.get("arguments", {})}
             checkpoint = Checkpoint(
                 checkpoint_id="uh_ckpt_" + task_id, task_id=task_id,  # 二审 N13：per-task 稳定 id
-                state={"task_id": task_id, "content": content, "trace_id": trace_id},
+                state=state,
             )
             self.store.save(checkpoint)
         state = dict(checkpoint.state)
@@ -400,6 +425,9 @@ class OrchestrationService:
                 checkpoint.updated_at = _now()
                 pass  # checkpoint_id 保持 per-task 稳定，不每次重生成（二审 N13）
                 self.store.save(checkpoint)
+                if isinstance(exc, OrchestrationError):
+                    await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": exc.to_dict()})
+                    raise
                 await self._emit(emit, "step.failed", {"step_id": step_id, "module": "langgraph", "error": {"code": module_error_code(), "message": str(exc), "retryable": False, "detail": {"module": "orchestration", "node_id": node_id}}})
                 raise OrchestrationError(module_error_code(), f"编排节点 {node_id} 失败: {exc}", detail={"module": "orchestration", "node_id": node_id}) from exc
         checkpoint.status = "completed"

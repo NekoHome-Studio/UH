@@ -544,14 +544,17 @@ class PluginDriver:
         security: PluginSecurityConfig | None = None,
         loaders: Mapping[str, PluginLoader] | None = None,
         sandbox_runner: Any = None,
+        capability_registry: Any = None,
     ) -> None:
         self.root = Path(root or os.environ.get(PLUGIN_ROOT_ENV, DEFAULT_PLUGIN_ROOT))
         self.registry_path = Path(registry_path or os.environ.get(PLUGIN_REGISTRY_ENV, DEFAULT_PLUGIN_REGISTRY))
         self.security = security or PluginSecurityConfig.from_env()
         self.records: dict[str, PluginRecord] = {}
+        self._restore_pending: set[str] = set()
+        self._lifecycle_lock = asyncio.Lock()
         default_loader: PluginLoader = NoopPluginLoader()
         if sandbox_runner is not None:
-            from .sandbox import ProcessPluginLoader
+            from .sandbox import MCPPluginLoader, ProcessPluginLoader
 
             process_loader = ProcessPluginLoader(sandbox_runner, on_crash=self._on_plugin_crash)
             self.loaders: dict[str, PluginLoader] = {
@@ -560,6 +563,10 @@ class PluginDriver:
                 "capability": process_loader,
                 "hook": process_loader,
             }
+            if capability_registry is not None:
+                self.loaders["tool"] = MCPPluginLoader(
+                    sandbox_runner, capability_registry, self.registry_path.with_name("plugin-sandbox-audit.jsonl"), self._on_plugin_crash,
+                )
         else:
             self.loaders = {"tool": default_loader, "theme": default_loader, "capability": default_loader, "hook": default_loader}
         if loaders:
@@ -568,7 +575,7 @@ class PluginDriver:
 
     async def _on_plugin_crash(self, manifest: PluginManifest, package_dir: Path) -> bool:
         record = self.records.get(manifest.name)
-        if record is None:
+        if record is None or record.status != "active":
             return False
         record.crash_count += 1
         record.updated_at = _now()
@@ -599,6 +606,7 @@ class PluginDriver:
                     # A process is never considered active until the current
                     # runtime has attached a loader and started it.
                     record.status = "installed"
+                    self._restore_pending.add(name)
                 self.records[name] = record
             except (KeyError, TypeError, ValueError, PluginError):
                 continue
@@ -608,7 +616,10 @@ class PluginDriver:
         fd, tmp_name = tempfile.mkstemp(prefix="plugins-", suffix=".json", dir=str(self.registry_path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump({name: record.to_dict() for name, record in sorted(self.records.items())}, handle, ensure_ascii=False, indent=2)
+                records = {name: record.to_dict() for name, record in sorted(self.records.items())}
+                for name in self._restore_pending:
+                    records[name]["status"] = "active"
+                json.dump(records, handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
             os.replace(tmp_name, self.registry_path)
         finally:
@@ -620,6 +631,45 @@ class PluginDriver:
     def get(self, name: str) -> dict[str, Any] | None:
         record = self.records.get(name)
         return record.info() if record else None
+
+    def tool_host(self, tool_name: str):
+        from .sandbox import MCPPluginLoader
+
+        loader = self._loader("tool")
+        if isinstance(loader, MCPPluginLoader):
+            name = loader.tools.get(tool_name)
+            record = self.records.get(name) if name is not None else None
+            if record is not None and record.status == "active":
+                return loader.hosts.get(name)
+        return None
+
+    async def restore_active(self) -> None:
+        async with self._lifecycle_lock:
+            for name in sorted(self._restore_pending):
+                record = self.records[name]
+                manifest = record.manifest
+                path = Path(record.install_path)
+                loader = self._loader(manifest.type)
+                try:
+                    await loader.load(manifest, path)
+                    await loader.activate(manifest, path)
+                except Exception as exc:
+                    await self._deactivate_loader(loader, manifest, path, force=True)
+                    record.status = "quarantined"
+                    log_event(log, 30, "plugin.restore.failed", plugin=name, error_type=type(exc).__name__)
+                else:
+                    record.status = "active"
+                self._restore_pending.remove(name)
+                record.updated_at = _now()
+                self._save_registry()
+
+    async def shutdown(self) -> None:
+        async with self._lifecycle_lock:
+            for name, record in self.records.items():
+                if record.status == "active":
+                    await self._deactivate_loader(self._loader(record.manifest.type), record.manifest, Path(record.install_path), force=True)
+                    record.status = "installed"
+                    self._restore_pending.add(name)
 
     def _loader(self, plugin_type: str) -> PluginLoader:
         loader = self.loaders.get(plugin_type)
@@ -645,6 +695,7 @@ class PluginDriver:
                 root / name / version,
             )
             for candidate in candidates:
+                _safe_resolve(candidate, root)
                 if candidate.exists():
                     return candidate, lambda: None
             raise PluginValidationError("market 插件不存在", detail={"source": raw, "market_root": str(root)})
@@ -656,23 +707,21 @@ class PluginDriver:
                 raise PluginPolicyError("git 来源主机不在白名单", detail={"source": raw, "violation": "git.host"})
             checkout = Path(tempfile.mkdtemp(prefix="uh-plugin-git-"))
             try:
-                subprocess.run(["git", "clone", "--depth", "1", "--", url, str(checkout)], check=True, capture_output=True, text=True, timeout=120)
+                subprocess.run(
+                    ["git", "-c", "http.followRedirects=false", "clone", "--depth", "1", "--", url, str(checkout)],
+                    check=True, capture_output=True, timeout=120, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                )
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 shutil.rmtree(checkout, ignore_errors=True)
                 raise PluginValidationError("git 插件源获取失败", detail={"source": raw}) from exc
             candidates = [checkout]
-            candidates.extend(path for path in checkout.iterdir() if path.is_dir() and (path / "manifest.yaml").exists())
+            candidates.extend(sorted(path for path in checkout.iterdir() if path.is_dir() and path.name != ".git" and (path / "manifest.yaml").exists()))
             for candidate in candidates:
                 if (candidate / "manifest.yaml").exists():
                     return candidate, lambda: shutil.rmtree(checkout, ignore_errors=True)
             shutil.rmtree(checkout, ignore_errors=True)
             raise PluginValidationError("git 插件源缺少 manifest.yaml", detail={"source": raw})
         raise PluginValidationError("安装源不存在或格式不支持", detail={"source": raw})
-
-    @staticmethod
-    def _read_source(source: Path, *, verify_signature: bool, driver: "PluginDriver"):
-        reader = driver._read_directory if source.is_dir() else driver._read_package
-        return reader(source, verify_signature=verify_signature)
 
     def _check_dependencies(self, manifest: PluginManifest) -> None:
         for dependency in manifest.dependencies:
@@ -725,11 +774,14 @@ class PluginDriver:
             raise PluginValidationError("验证源必须是插件目录或 .uhpkg 文件", detail={"source": str(source)})
         members: dict[str, Path] = {}
         for path in source.rglob("*"):
+            relative_path = path.relative_to(source)
+            if relative_path.parts[0] == ".git":
+                continue
             if path.is_symlink():
-                raise PluginValidationError("插件目录禁止符号链接", detail={"path": str(path.relative_to(source))})
+                raise PluginValidationError("插件目录禁止符号链接", detail={"path": str(relative_path)})
             if path.is_dir():
                 continue
-            name = _safe_member_name(path.relative_to(source).as_posix())
+            name = _safe_member_name(relative_path.as_posix())
             if name in members:
                 raise PluginValidationError("插件目录包含重复路径", detail={"path": name})
             members[name] = path
@@ -770,38 +822,35 @@ class PluginDriver:
         except ValueError as exc:
             raise PluginValidationError("主题包校验失败", detail={"field": "theme", "reason": str(exc)}) from exc
 
-    def validate(self, source: str | Path, *, no_verify: bool = False) -> dict[str, Any]:
+    def _validated_source(self, source: str | Path, *, no_verify: bool) -> tuple[PluginManifest, str, dict[str, bytes], list[dict[str, Any]]]:
+        if no_verify and not self.security.allow_unverified:
+            raise PluginPolicyError("当前模式禁止跳过插件签名校验", detail={"violation": "signature_bypass"})
         package, cleanup = self._resolve_source(source)
         try:
-            if no_verify:
-                if not self.security.allow_unverified:
-                    raise PluginPolicyError("当前模式禁止跳过插件签名校验", detail={"violation": "signature_bypass"})
-                manifest, digest, entries, _ = self._read_source(package, verify_signature=False, driver=self)
-            else:
-                manifest, digest, entries, _ = self._read_source(package, verify_signature=True, driver=self)
+            reader = self._read_directory if package.is_dir() else self._read_package
+            manifest, digest, entries, _ = reader(package, verify_signature=not no_verify)
             scan = _static_scan(entries)
             # SBX-02：危险 exec 调用（os.system/subprocess/eval/exec/ctypes）拒绝；出网导入告警需 allow_hosts 声明
             violations = [f for f in scan if f["kind"] == "exec_danger"]
             if violations:
                 raise PluginPolicyError("插件含危险调用，静态扫描拒绝", detail={"violation": "static_scan.exec", "findings": violations})
-            return {**manifest.to_info(status="validated", package_sha256=digest, install_path=""), "files": sorted(entries), "dependencies": list(manifest.dependencies), "static_scan": scan}
+            return manifest, digest, entries, scan
         finally:
             cleanup()
 
+    def validate(self, source: str | Path, *, no_verify: bool = False) -> dict[str, Any]:
+        manifest, digest, entries, scan = self._validated_source(source, no_verify=no_verify)
+        return {**manifest.to_info(status="validated", package_sha256=digest, install_path=""), "files": sorted(entries), "dependencies": list(manifest.dependencies), "static_scan": scan}
+
     async def install(self, source: str | Path, *, no_verify: bool = False) -> dict[str, Any]:
-        original_source = str(source)
-        package, cleanup_source = self._resolve_source(source)
-        if no_verify and not self.security.allow_unverified:
-            cleanup_source()
-            raise PluginPolicyError("当前模式禁止跳过插件签名校验", detail={"violation": "signature_bypass"})
-        try:
-            manifest, digest, entries, _ = self._read_source(package, verify_signature=not no_verify, driver=self)
-        except Exception:
-            cleanup_source()
-            raise
-        if no_verify:
-            # _read_package 已经做了签名校验路径判断，显式 bypass 只允许在本地开发配置中使用。
-            pass
+        manifest, digest, entries, scan = await asyncio.to_thread(self._validated_source, source, no_verify=no_verify)
+        async with self._lifecycle_lock:
+            result = await self._install(str(source), manifest, digest, entries)
+        if scan:
+            log_event(log, 30, "plugin.static_scan.warning", plugin=manifest.name, findings=scan)
+        return result
+
+    async def _install(self, source: str, manifest: PluginManifest, digest: str, entries: Mapping[str, bytes]) -> dict[str, Any]:
         self._check_dependencies(manifest)
         current = self.records.get(manifest.name)
         if current is not None:
@@ -826,21 +875,25 @@ class PluginDriver:
             if target.exists():
                 raise PluginValidationError("插件安装目录已存在", detail={"plugin": manifest.name})
             staging.rename(target)
-            record = PluginRecord(manifest, "installed", digest, str(target), original_source, _now(), _now())
+            record = PluginRecord(manifest, "installed", digest, str(target), source, _now(), _now())
             self.records[manifest.name] = record
-            self._save_registry()
             try:
+                self._save_registry()
                 await loader.activate(manifest, target)
-            except Exception as exc:
+                record.status = "active"
+                record.updated_at = _now()
+                self._save_registry()
+            except (Exception, asyncio.CancelledError) as exc:
                 await self._deactivate_loader(loader, manifest, target, force=True)
                 self.records.pop(manifest.name, None)
-                self._save_registry()
                 shutil.rmtree(target, ignore_errors=True)
                 _remove_empty_directory(target.parent)
+                self._save_registry()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                if isinstance(exc, PluginError):
+                    raise
                 raise PluginError("UH-KRN-2010", "插件 activate 失败，已回滚", status_code=400, detail={"plugin": manifest.name, "stage": "activate"}) from exc
-            record.status = "active"
-            record.updated_at = _now()
-            self._save_registry()
             log_event(log, 20, "plugin.install", plugin=manifest.name, version=manifest.version, plugin_type=manifest.type)
             return record.info()
         finally:
@@ -848,7 +901,6 @@ class PluginDriver:
                 shutil.rmtree(staging, ignore_errors=True)
             if staging_parent.exists() and not any(staging_parent.iterdir()):
                 staging_parent.rmdir()
-            cleanup_source()
 
     async def _deactivate_loader(self, loader: PluginLoader, manifest: PluginManifest, path: Path, *, force: bool = False) -> bool:
         try:
@@ -864,9 +916,16 @@ class PluginDriver:
             raise
 
     async def deactivate(self, name: str) -> dict[str, Any]:
+        async with self._lifecycle_lock:
+            return await self._deactivate(name)
+
+    async def _deactivate(self, name: str) -> dict[str, Any]:
         record = self.records.get(name)
         if record is None:
             raise PluginValidationError("插件不存在", detail={"plugin": name})
+        if name in self._restore_pending:
+            self._restore_pending.remove(name)
+            self._save_registry()
         if record.status not in {"active", "quarantined"}:
             return record.info()
         loader = self._loader(record.manifest.type)
@@ -878,6 +937,10 @@ class PluginDriver:
         return record.info()
 
     async def uninstall(self, name: str) -> dict[str, Any]:
+        async with self._lifecycle_lock:
+            return await self._uninstall(name)
+
+    async def _uninstall(self, name: str) -> dict[str, Any]:
         record = self.records.get(name)
         if record is None:
             raise PluginValidationError("插件不存在", detail={"plugin": name})
@@ -890,6 +953,7 @@ class PluginDriver:
         finally:
             shutil.rmtree(path, ignore_errors=True)
             _remove_empty_directory(path.parent)
+            self._restore_pending.discard(name)
             self.records.pop(name, None)
             self._save_registry()
         if path.exists():
@@ -898,6 +962,10 @@ class PluginDriver:
         return {"name": record.manifest.name, "version": record.manifest.version, "status": "uninstalled"}
 
     async def update_config(self, name: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
+        async with self._lifecycle_lock:
+            return self._update_config(name, config)
+
+    def _update_config(self, name: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
         record = self.records.get(name)
         if record is None:
             raise PluginValidationError("插件不存在", detail={"plugin": name})

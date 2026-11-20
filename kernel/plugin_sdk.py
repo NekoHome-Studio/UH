@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from .plugins import PluginManifest
-from .sandbox import SandboxPolicy
+from .sandbox import SandboxError, SandboxPolicy, capture_denials
 
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Any]
 
@@ -127,7 +127,7 @@ class MCPPluginServer:
         request_id = request.get("id")
         method = request.get("method")
         params = request.get("params") or {}
-        if method == "notifications/initialized":
+        if request_id is None and isinstance(method, str) and method.startswith("notifications/"):
             return None
         if method == "initialize":
             return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": self.plugin.manifest.name, "version": self.plugin.manifest.version}}}
@@ -136,13 +136,25 @@ class MCPPluginServer:
         if method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments") or {}
-            try:
-                content = await self.plugin.call_tool(str(name), dict(arguments))
-            except KeyError:
-                return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": f"unknown tool: {name}"}}
-            except Exception as exc:
-                return {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": str(exc)}], "isError": True}}
-            return {"jsonrpc": "2.0", "id": request_id, "result": {"content": content, "isError": False}}
+            with capture_denials() as denials:
+                try:
+                    content = await self.plugin.call_tool(str(name), dict(arguments))
+                    result = {"content": content, "isError": False}
+                except SandboxError as exc:
+                    error = exc.to_dict()
+                    error["detail"].pop("resource", None)
+                    result = {
+                        "content": [{"type": "text", "text": f"{exc.code} {exc.message}"}],
+                        "isError": True,
+                        "structuredContent": {"error": error},
+                    }
+                except KeyError:
+                    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": f"unknown tool: {name}"}}
+                except Exception as exc:
+                    result = {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+            if denials:
+                result["_meta"] = {"uh.sandbox.denials": denials}
+            return {"jsonrpc": "2.0", "id": request_id, "result": result}
         return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": f"method not found: {method}"}}
 
     async def serve(self, reader: Any = None, writer: Any = None) -> None:

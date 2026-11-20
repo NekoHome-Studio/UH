@@ -24,6 +24,7 @@ import yaml
 
 from .long_term_memory import create_long_term_memory
 from .plugins import PluginDriver, PluginError, PluginManifest
+from .protocol import CapabilityRegistry, EventBus, StorageGuard
 from .sandbox import SandboxRunner
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -71,7 +72,20 @@ def _read_pid() -> int | None:
 
 def _terminate(pid: int) -> None:
     if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        import _winapi
+
+        result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        if result.returncode and _alive(pid):
+            try:
+                process = _winapi.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+            except OSError as exc:
+                if exc.winerror != 87:  # ERROR_INVALID_PARAMETER: process already exited
+                    raise
+            else:
+                try:
+                    _winapi.TerminateProcess(process, 1)
+                finally:
+                    _winapi.CloseHandle(process)
     else:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -121,11 +135,16 @@ def _alive(pid: int | None) -> bool:
     if not pid:
         return False
     if os.name == "nt":
-        # 审查修复：中文 Windows tasklist 输出为 GBK，text=True 按 UTF-8 解码会崩；
-        # 取字节后容错解码（PID 为 ASCII 数字，不受编码影响）。
-        raw = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid], capture_output=True).stdout
-        out = raw.decode("utf-8", errors="replace")
-        return str(pid) in out
+        import _winapi
+
+        try:
+            process = _winapi.OpenProcess(_winapi.SYNCHRONIZE, False, pid)
+        except OSError as exc:
+            return exc.winerror == 5  # ERROR_ACCESS_DENIED: the process exists
+        try:
+            return _winapi.WaitForSingleObject(process, 0) == _winapi.WAIT_TIMEOUT
+        finally:
+            _winapi.CloseHandle(process)
     try:
         os.kill(pid, 0)
         return True
@@ -247,7 +266,7 @@ def confirm_task(args) -> int:
 
 
 def _plugin_driver() -> PluginDriver:
-    return PluginDriver(sandbox_runner=SandboxRunner())
+    return PluginDriver(sandbox_runner=SandboxRunner(), capability_registry=CapabilityRegistry(EventBus(), StorageGuard()))
 
 
 def plugin_validate(args) -> int:
@@ -261,8 +280,15 @@ def plugin_validate(args) -> int:
 
 
 def plugin_install(args) -> int:
+    async def install():
+        driver = _plugin_driver()
+        try:
+            return await driver.install(args.source, no_verify=args.no_verify)
+        finally:
+            await driver.shutdown()
+
     try:
-        result = asyncio.run(_plugin_driver().install(args.source, no_verify=args.no_verify))
+        result = asyncio.run(install())
     except PluginError as exc:
         print(json.dumps(exc.to_dict(), ensure_ascii=False), file=sys.stderr)
         return 1

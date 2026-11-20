@@ -35,11 +35,12 @@ class TaskManager:
     REPLAY_WINDOW_SECONDS = 5 * 60
     TERMINAL_EVENTS = frozenset({"task.finished", "task.failed", "task.cancelled"})
 
-    def __init__(self, llm: Any, memory: Any, rpc: Any = None, orchestration: Any = None, long_term_memory: Any = None, confirmations: Any = None, bus: Any = None):
+    def __init__(self, llm: Any, memory: Any, rpc: Any = None, orchestration: Any = None, long_term_memory: Any = None, confirmations: Any = None, bus: Any = None, *, plugin_host: Any = None):
         self.llm = llm
         self.memory = memory
         self.rpc = rpc
         self.orchestration = orchestration
+        self.plugin_host = plugin_host
         self.long_term_memory = long_term_memory
         self.confirmations = confirmations or ConfirmationManager()
         self._confirm_futures: dict[str, asyncio.Future] = {}
@@ -161,6 +162,8 @@ class TaskManager:
                 return decision
 
             try:
+                if self.plugin_host is not None:
+                    host = self.plugin_host(tool_name) or host
                 result = await host.call_tool(tool_name, arguments, risk_level=risk_level, confirm=confirm_cb, trace_id=t["trace_id"], task_id=task_id)
                 await self._emit(t, "task.finished", {"final_result": {"content": str(result.get("content", result))}, "duration_ms": 0})
             except MCPError as exc:
@@ -349,11 +352,15 @@ class TaskManager:
             task_deadline_ms = int(os.environ.get("UH_TASK_DEADLINE_MS", "120000"))
             result = await self.rpc.call(
                 "orchestration.run",
-                {"task_id": task_id, "content": content, "emit": emit, "resume": resume, "checkpoint_id": checkpoint_id},
+                {"task_id": task_id, "content": content, "emit": emit, "resume": resume, "checkpoint_id": checkpoint_id, "tool": context.get("tool")},
                 trace_id=task["trace_id"],
                 deadline_ms=task_deadline_ms,
             )
             if result.payload.get("degraded"):
+                error = result.payload.get("error", {})
+                if error.get("detail", {}).get("module") == "tool":
+                    await self._emit(task, "task.failed", {"error": error})
+                    return
                 if result.payload.get("error_code") == "UH-CAP-5021" and result.payload.get("reason") != "module unavailable":
                     await self._emit(task, "task.failed", {"error": result.payload.get("error", {"code": "UH-CAP-5021", "message": "编排超时", "retryable": True})})
                     return

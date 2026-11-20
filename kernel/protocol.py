@@ -143,6 +143,9 @@ class CapabilityRegistry:
     def is_available(self, name: str) -> bool:
         return self._available.get(name, False)
 
+    def is_registered(self, name: str) -> bool:
+        return name in self._handlers
+
     def _degraded(self, req: Envelope, reason: str, code: str = "UH-CAP-5021") -> Envelope:
         return Envelope(action=req.action, payload={"degraded": True, "reason": reason, "error_code": code}, trace_id=req.trace_id, span_id=req.span_id, from_=req.to, to=req.from_, parent_span_id=req.span_id)
 

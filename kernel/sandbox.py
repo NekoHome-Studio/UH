@@ -8,17 +8,38 @@ Windows M2 使用 Job Object 加进程级资源限制，文件和网络策略由
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import fnmatch
+import json
 import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Iterator, Mapping, NoReturn
 from urllib.parse import urlparse
 
-from .plugins import PluginManifest
+from . import tracing
+from .logging import get_logger, log_event
+from .mcp import MAX_RESPONSE_BYTES, MCPHost, StdioTransport
+from .plugins import PluginManifest, PluginPolicyError
+from .protocol import CapabilityRegistry
+
+log = get_logger("kernel.sandbox")
+_DENIALS: contextvars.ContextVar[list[dict[str, str]] | None] = contextvars.ContextVar("sandbox_denials", default=None)
+
+
+@contextlib.contextmanager
+def capture_denials() -> Iterator[list[dict[str, str]]]:
+    denials: list[dict[str, str]] = []
+    token = _DENIALS.set(denials)
+    try:
+        yield denials
+    finally:
+        _DENIALS.reset(token)
 
 
 class SandboxError(Exception):
@@ -54,6 +75,14 @@ class SandboxPolicy:
     permissions: set[str] = field(default_factory=set)
     allow_hosts: tuple[str, ...] = ()
 
+    @staticmethod
+    def _deny(message: str, resource: str, permission: str, violation: str) -> NoReturn:
+        fields = {"permission": permission, "violation": violation}
+        denials = _DENIALS.get()
+        if denials is not None:
+            denials.append(fields)
+        raise SandboxError("UH-KRN-2010", message, detail={**fields, "resource": resource})
+
     def _inside_plugin_dir(self, value: str | Path) -> bool:
         root = self.plugin_dir.resolve()
         candidate = Path(value).resolve()
@@ -64,21 +93,21 @@ class SandboxPolicy:
         inside = self._inside_plugin_dir(candidate)
         if inside:
             if write and "fs.sandbox.write" not in self.permissions:
-                raise SandboxError("UH-KRN-2010", "插件未声明沙箱写权限", detail={"resource": str(value), "violation": "fs.sandbox.write"})
+                self._deny("插件未声明沙箱写权限", str(value), "fs.sandbox.write", "fs.sandbox.write")
             if not write and "fs.sandbox.read" not in self.permissions:
-                raise SandboxError("UH-KRN-2010", "插件未声明沙箱读权限", detail={"resource": str(value), "violation": "fs.sandbox.read"})
+                self._deny("插件未声明沙箱读权限", str(value), "fs.sandbox.read", "fs.sandbox.read")
             return candidate.resolve()
         if not write and "fs.host.read" in self.permissions:
             return candidate.resolve()
-        raise SandboxError("UH-KRN-2010", "插件越权访问文件", detail={"resource": str(value), "violation": "filesystem"})
+        self._deny("插件越权访问文件", str(value), "fs.sandbox.write" if write else "fs.host.read", "filesystem")
 
     def check_host(self, host_or_url: str) -> str:
         if "network.outbound" not in self.permissions:
-            raise SandboxError("UH-KRN-2010", "插件未声明出网权限", detail={"resource": host_or_url, "violation": "network.outbound"})
+            self._deny("插件未声明出网权限", host_or_url, "network.outbound", "network.outbound")
         parsed = urlparse(host_or_url if "://" in host_or_url else "//" + host_or_url)
         host = (parsed.hostname or "").lower().rstrip(".")
         if not host or not any(fnmatch.fnmatchcase(host, pattern.lower()) for pattern in self.allow_hosts):
-            raise SandboxError("UH-KRN-2010", "出站目标不在插件白名单", detail={"resource": host_or_url, "violation": "network.allow_hosts"})
+            self._deny("出站目标不在插件白名单", host_or_url, "network.outbound", "network.allow_hosts")
         return host
 
 
@@ -205,6 +234,153 @@ class ProcessPluginLoader:
             process.close()
 
 
+class _SandboxStdioTransport(StdioTransport):
+    def __init__(self, manifest: PluginManifest, plan: SandboxPlan) -> None:
+        super().__init__(list(plan.command), cwd=str(plan.cwd))
+        self.manifest = manifest
+        self.plan = plan
+        self.job: _WindowsJob | None = None
+        self.stopped = False
+
+    async def _spawn(self, argv: list[str], env: dict[str, str]) -> asyncio.subprocess.Process:
+        if self.stopped:
+            raise RuntimeError("插件进程已关闭")
+        process = await asyncio.create_subprocess_exec(
+            *argv, cwd=self.cwd, env=dict(self.plan.env),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            limit=MAX_RESPONSE_BYTES * 2,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
+        )
+        try:
+            self.job = _WindowsJob.create(
+                self.manifest, process.pid, int(self.manifest.config.get("memory_limit_mb", 256)),
+                int(self.manifest.config.get("timeout_ms", 5000)),
+            )
+        except Exception:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.communicate()
+            raise
+        return process
+
+    def terminate(self) -> None:
+        self.stopped = True
+        if self.job is not None:
+            self.job.close()
+        elif self.process is not None and self.process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self.process.kill()
+
+    async def cancel(self, request_id: int, reason: str) -> None:
+        # A blocked SDK handler cannot read an MCP cancellation notification.
+        self.terminate()
+
+    async def close(self) -> None:
+        self.terminate()
+        await super().close()
+
+
+class MCPPluginLoader(ProcessPluginLoader):
+    """Discover and register tools on the supervised sandbox process's stdio."""
+
+    def __init__(
+        self, runner: SandboxRunner, registry: CapabilityRegistry, audit_path: Path,
+        on_crash: Callable[[PluginManifest, Path], Awaitable[bool]],
+    ) -> None:
+        super().__init__(runner, on_crash)
+        self.registry = registry
+        self.audit_path = audit_path
+        self.tools: dict[str, str] = {}
+        self.hosts: dict[str, MCPHost] = {}
+
+    def _audit(self, plugin: str, denial: dict[str, Any], trace_id: str) -> None:
+        permission, violation = denial.get("permission"), denial.get("violation")
+        if permission not in ("fs.sandbox.read", "fs.sandbox.write", "fs.host.read", "network.outbound"):
+            return
+        if violation not in (permission, "filesystem", "network.allow_hosts"):
+            return
+        with tracing.request_context(trace_id or tracing.get_trace_id()):
+            fields = {"plugin": plugin, "permission": permission, "violation": violation, "trace_id": tracing.get_trace_id()}
+            log_event(log, 30, "plugin.sandbox.denied", **fields)
+            try:
+                self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.audit_path.open("a", encoding="utf-8") as audit:
+                    audit.write(json.dumps({"event": "plugin.sandbox.denied", **fields}, ensure_ascii=False) + "\n")
+            except OSError as exc:
+                log_event(log, 40, "plugin.sandbox.audit_failed", plugin=plugin, error_type=type(exc).__name__)
+
+    async def _start_host(self, manifest: PluginManifest, package_dir: Path) -> _SandboxStdioTransport:
+        transport = _SandboxStdioTransport(manifest, self.runner.build_plan(manifest, package_dir))
+        host = MCPHost(transport, bus=self.registry.bus, max_retries=0, sandbox_audit=partial(self._audit, manifest.name))
+        try:
+            discovered = await host.list_tools()
+            names = [tool.get("name") if isinstance(tool, dict) else None for tool in discovered]
+            if not names or any(not isinstance(name, str) or not name for name in names):
+                raise PluginPolicyError("插件未公开有效 MCP 工具", detail={"plugin": manifest.name})
+            if len(set(names)) != len(names) or any(self.registry.is_registered(f"mcp.tool.{name}") for name in names):
+                raise PluginPolicyError("插件 MCP 工具名已被注册", detail={"plugin": manifest.name, "violation": "tool_name_conflict"})
+            await host.register_capabilities(self.registry, manifest=dict.fromkeys(names, manifest.raw), tools=discovered)
+            self.tools.update(dict.fromkeys(names, manifest.name))
+            self.hosts[manifest.name] = host
+        except (Exception, asyncio.CancelledError):
+            await host.close()
+            raise
+        return transport
+
+    def _remove_host(self, name: str) -> MCPHost | None:
+        for tool, owner in list(self.tools.items()):
+            if owner == name:
+                self.registry.unregister(f"mcp.tool.{tool}")
+                del self.tools[tool]
+        return self.hosts.pop(name, None)
+
+    async def activate(self, manifest: PluginManifest, package_dir: Path) -> None:
+        if manifest.name in self.monitors:
+            return
+        transport = await self._start_host(manifest, package_dir)
+        self.monitors[manifest.name] = asyncio.create_task(self._monitor_host(manifest, package_dir, transport))
+
+    async def _monitor_host(self, manifest: PluginManifest, package_dir: Path, transport: _SandboxStdioTransport) -> None:
+        try:
+            while True:
+                assert transport.process is not None
+                await transport.process.wait()
+                host = self._remove_host(manifest.name)
+                if host is not None:
+                    await host.close()
+                while self.on_crash and await self.on_crash(manifest, package_dir):
+                    try:
+                        transport = await self._start_host(manifest, package_dir)
+                        break
+                    except Exception:
+                        continue
+                else:
+                    return
+        finally:
+            self.monitors.pop(manifest.name, None)
+
+    async def deactivate(self, manifest: PluginManifest, package_dir: Path) -> None:
+        host = self._remove_host(manifest.name)
+        monitor = self.monitors.get(manifest.name)
+        if host is not None:
+            host.transport.terminate()
+        try:
+            if monitor is not None:
+                monitor.cancel()
+                await asyncio.gather(monitor, return_exceptions=True)
+        finally:
+            if host is not None:
+                await host.close()
+
+    def force_kill(self, manifest: PluginManifest, package_dir: Path) -> None:
+        monitor = self.monitors.get(manifest.name)
+        if monitor is not None:
+            monitor.cancel()
+        host = self._remove_host(manifest.name)
+        if host is not None:
+            host.transport.terminate()
+
+
 class SandboxRunner:
     def __init__(self, *, enforce: bool = True, root: str | Path | None = None):
         self.enforce = enforce
@@ -232,6 +408,9 @@ class SandboxRunner:
             env["PATH"] = os.defpath
         else:
             env = os.environ.copy()
+        sdk_root = Path(__file__).resolve().parent.parent
+        if manifest.type == "tool":
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(sdk_root), env.get("PYTHONPATH"))))
         env.update({
             "UH_SANDBOX_ROOT": str(package_path),
             "UH_SANDBOX_NETWORK": "allow" if "network.outbound" in policy.permissions else "deny",
@@ -255,14 +434,17 @@ class SandboxRunner:
                 "--ro-bind", "/lib", "/lib", "--bind", str(package_path), "/sandbox",
                 "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chdir", "/sandbox",
             ]
-            if manifest.type == "hook":
+            if manifest.type in {"hook", "tool"}:
                 entry = Path(command[-1]).relative_to(package_path).as_posix()
                 command[-1] = "/sandbox/" + entry
-                if command[0] == sys.executable:
+                if command[0] == sys.executable and manifest.type == "hook":
                     command[0] = "/usr/bin/python3"
                 if Path("/lib64").exists():
                     wrapped.extend(["--ro-bind", "/lib64", "/lib64"])
                 env["UH_SANDBOX_ROOT"] = "/sandbox"
+            if manifest.type == "tool":
+                wrapped.extend(["--ro-bind", str(sdk_root / "kernel"), "/uh-sdk/kernel"])
+                env["PYTHONPATH"] = "/uh-sdk"
             wrapped += command
             return SandboxPlan(tuple(wrapped), package_path, env, "linux")
         if self.enforce:
@@ -281,7 +463,7 @@ class SandboxRunner:
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
         )
         try:
-            job = _WindowsJob.create(manifest, process, int(manifest.config.get("memory_limit_mb", 256)), int(manifest.config.get("timeout_ms", 5000))) if os.name == "nt" else None
+            job = _WindowsJob.create(manifest, process.pid, int(manifest.config.get("memory_limit_mb", 256)), int(manifest.config.get("timeout_ms", 5000)))
         except Exception:
             process.kill()
             process.communicate()
@@ -315,7 +497,7 @@ class _WindowsJob:
         self.kernel32 = kernel32
 
     @classmethod
-    def create(cls, manifest: PluginManifest, process: subprocess.Popen, memory_limit_mb: int, timeout_ms: int):
+    def create(cls, manifest: PluginManifest, pid: int, memory_limit_mb: int, timeout_ms: int):
         if os.name != "nt":
             return None
         import ctypes
@@ -325,6 +507,8 @@ class _WindowsJob:
         kernel32.CreateJobObjectW.restype = wintypes.HANDLE
         kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
         kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
         kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
         kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
         handle = kernel32.CreateJobObjectW(None, None)
@@ -349,7 +533,14 @@ class _WindowsJob:
         if not kernel32.SetInformationJobObject(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
             kernel32.CloseHandle(handle)
             raise SandboxError("UH-KRN-2010", "无法配置 Windows Job Object", detail={"plugin": manifest.name, "violation": "job_limits"})
-        if not kernel32.AssignProcessToJobObject(handle, wintypes.HANDLE(process._handle)):
+        process_handle = kernel32.OpenProcess(0x0101, False, pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
+        assigned = False
+        if process_handle:
+            try:
+                assigned = kernel32.AssignProcessToJobObject(handle, process_handle)
+            finally:
+                kernel32.CloseHandle(process_handle)
+        if not assigned:
             kernel32.CloseHandle(handle)
             raise SandboxError("UH-KRN-2010", "无法绑定插件进程到 Job Object", detail={"plugin": manifest.name, "violation": "job_assign"})
         return cls(handle, kernel32)
@@ -364,4 +555,4 @@ class _WindowsJob:
             self.handle = None
 
 
-__all__ = ["ProcessPluginLoader", "SandboxError", "SandboxLimits", "SandboxPlan", "SandboxPolicy", "SandboxProcess", "SandboxRunner"]
+__all__ = ["MCPPluginLoader", "ProcessPluginLoader", "SandboxError", "SandboxLimits", "SandboxPlan", "SandboxPolicy", "SandboxProcess", "SandboxRunner"]
