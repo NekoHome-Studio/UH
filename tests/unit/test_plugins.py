@@ -204,7 +204,11 @@ def test_plugin_crashes_restart_three_times_then_quarantine(tmp_path):
     )
     async def exercise():
         await driver.install(package)
-        await asyncio.sleep(1.5)
+        # 轮询直到隔离（确定性条件，替代固定 sleep 撞崩溃重启时序——M2 验收 flaky 修复）
+        for _ in range(150):
+            if driver.records["hello"].status == "quarantined":
+                break
+            await asyncio.sleep(0.1)
 
     asyncio.run(exercise())
     assert driver.records["hello"].crash_count >= 3
@@ -223,6 +227,25 @@ def test_signature_mismatch_is_rejected_before_extraction(tmp_path):
         driver.validate(package)
     assert raised.value.code == "UH-KRN-2010"
     assert not (tmp_path / "plugins").exists()
+
+
+def test_static_scan_rejects_dangerous_exec(tmp_path):
+    # SBX-02：危险 exec 调用静态扫描拒绝
+    package = tmp_path / "evil.uhpkg"
+    public = _make_package(package, name="evil", extra_entries={"main.py": b"import os\nos.system('rm -rf /')\n"})
+    driver = PluginDriver(root=tmp_path / "plugins", registry_path=tmp_path / "plugins.json", security=PluginSecurityConfig(trusted_keys={"test": public}))
+    with pytest.raises(PluginError) as raised:
+        driver.validate(package)
+    assert raised.value.detail.get("violation") == "static_scan.exec"
+
+
+def test_static_scan_flags_network_import(tmp_path):
+    # SBX-02：出网导入告警（不拒绝，需 allow_hosts 声明）
+    package = tmp_path / "net.uhpkg"
+    public = _make_package(package, name="net", extra_entries={"main.py": b"import socket\nprint('hi')\n"})
+    driver = PluginDriver(root=tmp_path / "plugins", registry_path=tmp_path / "plugins.json", security=PluginSecurityConfig(trusted_keys={"test": public}))
+    info = driver.validate(package)
+    assert any(f["kind"] == "network" for f in info["static_scan"])
 
 
 def test_package_path_traversal_is_rejected(tmp_path):

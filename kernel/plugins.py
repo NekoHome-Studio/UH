@@ -378,6 +378,43 @@ class NoopPluginLoader:
         return None
 
 
+_DANGEROUS_CALLS = {"os.system", "os.popen", "os.execv", "os.execve", "os.spawnl", "subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_output", "subprocess.check_call", "eval", "exec", "ctypes.CDLL", "ctypes.WinDLL", "__import__"}
+_NETWORK_MODULES = {"socket", "http.client", "urllib.request", "requests", "aiohttp", "httpx", "websocket", "websockets"}
+
+
+def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
+    """SBX-02 出网/危险调用静态扫描：AST 检测危险 exec 与出网导入。"""
+    findings: list[dict[str, Any]] = []
+    for name, content in entries.items():
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(content.decode("utf-8"), filename=name)
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if alias.name in _NETWORK_MODULES or root in _NETWORK_MODULES:
+                        findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": alias.name})
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                if mod in _NETWORK_MODULES or mod.split(".")[0] in _NETWORK_MODULES:
+                    findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": mod})
+            elif isinstance(node, ast.Call):
+                func = node.func
+                label = ""
+                if isinstance(func, ast.Attribute):
+                    base = func.value.id if isinstance(func.value, ast.Name) else ""
+                    label = f"{base}.{func.attr}" if base else func.attr
+                elif isinstance(func, ast.Name):
+                    label = func.id
+                if label in _DANGEROUS_CALLS:
+                    findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": label})
+    return findings
+
+
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -742,7 +779,12 @@ class PluginDriver:
                 manifest, digest, entries, _ = self._read_source(package, verify_signature=False, driver=self)
             else:
                 manifest, digest, entries, _ = self._read_source(package, verify_signature=True, driver=self)
-            return {**manifest.to_info(status="validated", package_sha256=digest, install_path=""), "files": sorted(entries), "dependencies": list(manifest.dependencies)}
+            scan = _static_scan(entries)
+            # SBX-02：危险 exec 调用（os.system/subprocess/eval/exec/ctypes）拒绝；出网导入告警需 allow_hosts 声明
+            violations = [f for f in scan if f["kind"] == "exec_danger"]
+            if violations:
+                raise PluginPolicyError("插件含危险调用，静态扫描拒绝", detail={"violation": "static_scan.exec", "findings": violations})
+            return {**manifest.to_info(status="validated", package_sha256=digest, install_path=""), "files": sorted(entries), "dependencies": list(manifest.dependencies), "static_scan": scan}
         finally:
             cleanup()
 
