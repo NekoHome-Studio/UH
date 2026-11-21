@@ -214,3 +214,19 @@ def test_scan_rejects_round5_bypasses(tmp_path, src, label):
     with pytest.raises(PluginError) as ei:
         _driver(tmp_path, pub).validate(path)
     assert ei.value.detail.get("violation") == "static_scan.exec"
+
+
+# --- 六轮（v5-bypass 残余面提示 + DSH 最新基线实测：仅实例属性赋值仍绕）---
+@pytest.mark.parametrize("src,label", [
+    (b"import os\nclass A:\n    pass\na=A()\na.m=os.system\na.m('id')\n", "instance-attr"),
+    (b"import os, functools\nf = functools.partial(os.system,'id')\nf()\n", "assign-call"),
+    (b"import os\nK='system'\ngetattr(os,K)('id')\n", "getattr-var"),
+    (b"import os\nd={'k':os.system}\nk='k'\nd[k]('id')\n", "subscript-var"),
+    (b"(lambda:0).__globals__['__builtins__']['__import__']('os').system('id')\n", "lambda-globals"),
+])
+def test_scan_rejects_round6_residual(tmp_path, src, label):
+    from kernel.plugins import PluginError
+    path, pub = _pkg(tmp_path, {"main.py": src}, name=label)
+    with pytest.raises(PluginError) as ei:
+        _driver(tmp_path, pub).validate(path)
+    assert ei.value.detail.get("violation") == "static_scan.exec"

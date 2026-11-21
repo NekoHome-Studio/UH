@@ -466,6 +466,11 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
                     if hits:
                         container_danger.add(target)
                         findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": f"容器存入危险调用 {hits[0]}"})
+            # 六轮：实例属性赋危险 callable（a.m = os.system 后 a.m(...)）
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Attribute):
+                hit = _dangerous_value(node.value)
+                if hit:
+                    findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": f"实例属性存入危险调用 {hit}"})
             # 类体内属性赋危险 callable
             if isinstance(node, ast.ClassDef):
                 for stmt in node.body:
