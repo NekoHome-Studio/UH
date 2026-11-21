@@ -164,3 +164,20 @@ def test_zip_bomb_precheck_rejects_oversized(tmp_path):
         z.writestr(zi, b"")
     with pytest.raises(PluginError):
         _driver(tmp_path, pub).validate(path)
+
+
+# --- 三轮对抗（子代理代码分析指出，DSH 实测确认并修复）---
+@pytest.mark.parametrize("src,label", [
+    (b"from builtins import eval\neval('1')\n", "from-builtins-eval"),
+    (b"import builtins as b\nb.eval('1')\n", "builtins-alias"),
+    (b"from builtins import exec\nexec('1')\n", "from-builtins-exec"),
+    (b"import os\nos.system('id')\n\x00bad\n", "syntax-error"),
+    (b"import os\nvars(os)['system']('id')\n", "vars-subscript"),
+    (b"import os\nos.__dict__['system']('id')\n", "dict-subscript"),
+])
+def test_scan_rejects_round3_bypasses(tmp_path, src, label):
+    from kernel.plugins import PluginError
+    path, pub = _pkg(tmp_path, {"main.py": src}, name=label)
+    with pytest.raises(PluginError) as ei:
+        _driver(tmp_path, pub).validate(path)
+    assert ei.value.detail.get("violation") == "static_scan.exec"

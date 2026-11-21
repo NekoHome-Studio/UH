@@ -384,6 +384,8 @@ _NETWORK_MODULES = {"socket", "http.client", "urllib.request", "requests", "aioh
 
 _JS_DANGER = re.compile(r"child_process|execSync|\bexec\s*\(|\beval\s*\(|new\s+Function|\bspawn\s*\(")
 _DANGEROUS_ATTRS = {"system", "popen", "execv", "execve", "spawnl", "spawnle", "Popen", "run", "call", "check_output", "check_call"}
+# 尾名黑名单：任意命名空间（builtins.eval / b.eval / os.system 等）均命中
+_DANGEROUS_TAILS = {"system", "popen", "execv", "execve", "spawnl", "spawnle", "Popen", "check_output", "check_call", "eval", "exec", "CDLL", "WinDLL", "__import__", "import_module", "getattr"}
 
 
 def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
@@ -418,7 +420,9 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
                 continue
         try:
             tree = ast.parse(source, filename=name)
-        except (SyntaxError, UnicodeDecodeError):
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            # 三轮对抗修复：无法解析的源码不得静默放行（null 字节/语法混淆曾绕过扫描）
+            findings.append({"file": name, "line": 1, "kind": "exec_danger", "detail": "源码无法解析，拒绝静态放行"})
             continue
         aliases: dict[str, str] = {}
         for node in ast.walk(tree):
@@ -449,10 +453,21 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
             if not isinstance(node, ast.Call):
                 continue
             label = resolve(node.func)
-            danger = label in _DANGEROUS_CALLS or label.endswith(".import_module") or label in {"getattr", "__import__", "eval", "exec"}
-            # getattr(obj, 'system') 动态取危险属性
-            if label == "getattr" and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value in _DANGEROUS_ATTRS:
+            # 三轮对抗修复：按尾名匹配（此前 from builtins import eval / import builtins as b; b.eval 归一为
+            # "builtins.eval" 不在全名黑名单 → 绕过）；任意命名空间下的危险函数名一律命中。
+            tail = label.rsplit(".", 1)[-1]
+            danger = (
+                label in _DANGEROUS_CALLS
+                or tail in _DANGEROUS_TAILS
+                or label.endswith(".import_module")
+            )
+            # getattr(obj, 'system') 动态取危险属性（含别名归一后的 *.getattr）
+            if tail == "getattr" and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value in _DANGEROUS_ATTRS:
                 danger = True
+            # 下标取属性动态调用：vars(os)['system'] / os.__dict__['system'] / __builtins__['__import__']
+            if isinstance(node.func, ast.Subscript) and isinstance(node.func.slice, ast.Constant) and node.func.slice.value in _DANGEROUS_ATTRS | {"__import__", "eval", "exec", "getattr"}:
+                danger = True
+                label = label or f"subscript[{node.func.slice.value}]"
             if danger:
                 findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": label or "dynamic_call"})
     return findings
