@@ -156,7 +156,7 @@
 
 ### R-2（P2）工具插件子进程继承内核完整环境（含 `UH_AUTH_TOKEN`）
 - 位置：`kernel/sandbox.py:409-410`（`type != "hook"` 时 `env = os.environ.copy()`），对比 `:404-408`（hook 只保留 `SYSTEMROOT/WINDIR/SYSTEMDRIVE/PATH`）
-- 复现：设 `UH_AUTH_TOKEN=SUPER-SECRET-TOKEN-PROBE`、`UH_AUTH_TOKEN_FILE=D:/secret/token.txt`，安装并运行工具插件，插件内读到 `{"UH_AUTH_TOKEN": "<present len=24>", "UH_AUTH_TOKEN_FILE": "<present len=19>", ...}`
+- 复现：设 `UH_AUTH_TOKEN=<probe-token-已脱敏>`、`UH_AUTH_TOKEN_FILE=<probe-path-已脱敏>`，安装并运行工具插件，插件内读到 `{"UH_AUTH_TOKEN": "<present len=24>", "UH_AUTH_TOKEN_FILE": "<present len=19>", ...}`
 - 影响：签名但越权的插件可夺走内核 bearer token（生产鉴权 B 下等同全权）；`fs.host.read` 插件还可直接读 `D:\uh\.auth-token`。建议：tool 与 hook 同样做环境白名单（`UH_SANDBOX_*` + `SYSTEMROOT` + `PATH` + `PYTHONPATH`），凭据只经内核代理注入。
 
 ### R-3（P2）`docs/sdk/python-tool.md` 三处与实现不符，照抄必失败
