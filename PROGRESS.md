@@ -252,6 +252,20 @@
 - 本机 Windows 核验签名审计 Hook 热装卸与路由审计落盘，修复 SDK 继承 stdio 句柄时的启动失败。三个官方工具均通过本地 CLI 校验和 `plugin dev --once` 握手。
 - 官方插件源码 `plugin validate` 已写入 CI 工作流。验收证据与缺口见 [M2 收尾验收](docs/reviews/2026-11-20-M2-收尾验收.md)。
 
+### 2026-11-20 · M2 独立验收（不通过）→ 架构缺口补完
+
+- 三模型独立验收（Claude-Sonnet-4.5/DeepSeek-V4.1/Hunyuan）均不通过：**P0 服务器仍 M1 部署**（DSH 提交 M2 后未 scp，五模块缺失，服务器测试仅 148）+ 架构缺口（生产调用闭环/启动重激活/沙箱审计/生产态工具运行/安装来源）。
+- DSH 修 P0：scp M2 全量 + pyyaml，服务器 205/205，跨机 themes/plugins/themes.js 200。修 flaky 崩溃测试（轮询化）+ SBX-02 静态扫描 + SDK 文档补全。
+- Codex brief 0014（CLI relay A 路径）补架构缺口：tasks.plugin_host 生产调用闭环 + restore_active 启动重激活 + plugin-sandbox-audit.jsonl 审计 + UH-KRN-2010 透出 + 子进程仓库根 PYTHONPATH + 目录/市场/Git 安装来源。205/205 双端。
+
+### 2026-11-21 · M2 独立复检（有条件通过）→ 结项修复
+
+- Claude（brief 0015）+ Hunyuan 复检：P0/缺口闭合，双端 kernel SHA256 全 SAME，Windows SBX-01~05 实机全过，跨机隔离实例链路零污染。有条件通过，MS-3 可结项。
+- 剩余条件 DSH 全修：**R-3** SDK 文档 3 处（network 顶层节点/SIGNATURE digest 字段/摘要内容长度 8 字节）；**R-2** tool 子进程剥离 7 凭据键（防越权夺 UH_AUTH_TOKEN）；**R-1** 静态扫描加固（别名归一/from-import/getattr/importlib/JS 入口）+ 6 绕过回归；Git fixture 3/3。
+- secret 扫描 check 9 误报复检报告探针 token → 脱敏。**212/212 双端 + verify-all full 8/8**。基线 b5e3421。
+
 ## 下一步
 
-完成 M2-2 分平台沙箱门禁、M2-3 SDK 第三方 30 分钟验收及 M2-6 安装来源和静态扫描验收，交 DSH 评审 MS-3。M1 生产环境跨机验收沿用 [跨机验收指南](docs/reviews/2026-11-18-跨机验收指南.md)。
+**MS-3 结项待用户确认**（用户暂缓）：DSH 审 6 任务卡 → GitHub 关闭 #22~#27 + tag m2-v0.1.0 → M3 生产期（#28 Compose 起）。
+M3 含登记项：SBX Linux/macOS 平台矩阵证据（无主机）、R-4~R-8 加固（审计自报覆盖/ProcessPluginLoader 收尾/no_verify 暴露面）、生产化收敛（dev 生产关/TLS+WS 短时票据/per-user principal/delta 合批/主题 REST OpenAPI 登记/web-search 真实代理）。
+交接见 [交接文档](docs/runbooks/交接文档.md) + [环境状态总览](docs/runbooks/环境状态总览.md)。

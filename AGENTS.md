@@ -10,10 +10,10 @@
 
 ## 2. 当前状态（随进度更新）
 - MS-0 契约冻结：tag contract-v0.1.0，#1~#6 关闭；契约状态头已回写 frozen。
-- M0 骨架期完成（#7~#12）；M1 能力期完成（#13~#21，9/9）：内部协议/MCP/检索/编排/长期记忆/响应包裹/WS/高危确认/事件字典。
-- 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0。
-- M1 三模型审查（GPT-6/DeepSeek-V4-Flash/Hunyuan）后已修第一批+第二批（bus→task 桥/StorageGuard 接线/step.failed 配对/治理回写/CI 增 pytest）；详见 docs/reviews/。
-- 下一步：M1 生产链路二次验收（REST 全局鉴权待定方案）→ M2 插件期（M2-1 #22 起）。
+- M0 骨架期完成（#7~#12）；M1 能力期完成（#13~#21，9/9）；M2 插件期功能完成（#22~#27）：插件驱动/最小沙箱/工具 SDK+3 官方工具/主题 CSS 契约/钩子+审计/插件 CLI。
+- 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0 / m1-review-fixed-v0.1.0 / m1-review2-fixed-v0.1.0（m2-v0.1.0 待 MS-3 结项）。
+- M1 一~五审 + M2 独立验收/复检（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；212 测试 + verify-all full 8/8（含 secret 扫描）；详见 docs/reviews/。
+- 当前：M2 复检条件闭合（P0 部署/生产闭环/重激活/沙箱审计/静态扫描加固/凭据剥离/SDK 文档），**MS-3 结项待用户确认** → 关闭 #22~#27 + tag m2-v0.1.0 → M3 生产期（#28 起，含 SBX Linux/macOS 补证）。
 - 实时进度以 PROGRESS.md 为准；任务编号映射见 uh-issues/issue-map.csv（#1~#39）。
 
 ## 3. 事实源与阅读顺序
