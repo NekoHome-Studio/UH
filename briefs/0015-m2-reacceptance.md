@@ -4,14 +4,15 @@
 你是**独立复检审查者**（非实现方 DSH/Codex）。只读审查，**不修改任何受版本控制源码/契约/服务器配置**，只新增复检报告。未阅读其他审查者本轮材料；结论独立从代码+契约+双端运行时得出。
 
 ## 基线（已更新）
-- commit **3354126** · 门禁声明 **205/205（本机+服务器）**，verify-all full 8/8
+- commit **d26f28c** · 门禁声明 **212/212（本机+服务器）**，verify-all full 8/8
+- **本轮已修（上轮复检条件，请独立核实闭合）**：R-3 SDK 文档 3 处（network 顶层节点非 config / SIGNATURE 需 digest 字段 / 摘要内容长度 8 字节）；R-2 tool 子进程剥离 7 凭据键（UH_AUTH_TOKEN 等，防越权夺 token）；R-1 静态扫描加固（import 别名归一 / from-import / getattr 危险属性 / importlib.__import__ / JS 入口）+ 6 绕过回归；Git fixture 3/3 通过。修复提交 c9fb7fa→b5e3421。
 - 服务器 192.168.0.28:8080（ssh ipc，D:\uh，生产鉴权 B + 验收期 UH_DEV_MODE=1）；本机 192.168.0.14
 - 凭据：服务器 D:\uh\.auth-token；本机 .work/server-auth-token.txt（gitignored，报告不含 token 原文）
 
 ## 上轮（brief 0013）阻断与本轮处置（待你独立核实）
 | 上轮问题 | 声称处置 | 复检要点 |
 |---|---|---|
-| **P0 服务器仍 M1 部署** | DSH 已 scp M2 全量+pyyaml，服务器 205/205 | **双端 kernel/*.py SHA256 一致性**（21 文件）+ 服务器测试集 205 + 跨机 GET /themes 200 / POST /plugins 正常 / themes.js 200 |
+| **P0 服务器仍 M1 部署** | DSH 已 scp M2 全量+pyyaml，服务器 212/212 | **双端 kernel/*.py SHA256 一致性**（21 文件）+ 服务器测试集 205 + 跨机 GET /themes 200 / POST /plugins 正常 / themes.js 200 |
 | M2-1 生产调用闭环 | tasks.plugin_host 路由 | 已安装签名工具经 dev/tool-task + workflow 真实调用成功 |
 | M2-1 启动重激活 | startup register_capabilities | 重启后 active 工具可调用 + Hook 订阅恢复 + trace_id 一致 |
 | M2-2 沙箱审计/错误码 | plugin-sandbox-audit.jsonl + UH-KRN-2010 | 越界/未声明出网→审计落盘含 plugin/permission/violation/trace_id + MCP 返回 UH-KRN-2010 |
@@ -29,7 +30,8 @@
 
 ## 复检范围
 ### A. 门禁 + 部署一致性（P0 核心）
-- 本机 pytest 205 + verify-all full 8/8 + secret-scan；服务器 server-test.ps1 205。
+- 本机 pytest 212 + verify-all full 8/8 + secret-scan；服务器 server-test.ps1 212。
+- **新增回归须核**：R-1 六类绕过样本（import as / from-import / getattr / importlib / import os as o / JS child_process）全部拒绝；R-2 tool 子进程 env 不含 UH_AUTH_TOKEN/UH_AUTH_TOKEN_FILE。
 - **双端 kernel/*.py 逐文件 SHA256 对比**（须全 SAME）；服务器含 plugins/sandbox/hooks/themes/plugin_sdk 五模块。
 ### B. 跨机 M2 链路（本机→服务器）
 - 跨机插件 install/activate/uninstall（签名包）+ 主题切换 <200ms + 钩子审计 trace/span。
