@@ -196,3 +196,21 @@ def test_scan_rejects_round4_alias_bypasses(tmp_path, src, label):
     with pytest.raises(PluginError) as ei:
         _driver(tmp_path, pub).validate(path)
     assert ei.value.detail.get("violation") == "static_scan.exec"
+
+
+# --- 五轮对抗（DSH 自测 8 样本，3 新绕过：容器存函数/类属性/partial 实参）---
+@pytest.mark.parametrize("src,label", [
+    (b"import os\nd={'k':os.system}\nd['k']('id')\n", "dict-value"),
+    (b"import os\nclass A:\n    m = os.system\nA().m('id')\n", "class-attr"),
+    (b"import os, functools\nfunctools.partial(os.system,'id')()\n", "partial-arg"),
+    (b"import os\nos . system('id')\n", "space-attr"),
+    (b"import os\n(getattr)(os,'system')('id')\n", "paren-getattr"),
+    (b"exec(\"import os; os.system('id')\")\n", "exec-string"),
+    (b"import os\nglobals()['os'].system('id')\n", "globals-sub"),
+])
+def test_scan_rejects_round5_bypasses(tmp_path, src, label):
+    from kernel.plugins import PluginError
+    path, pub = _pkg(tmp_path, {"main.py": src}, name=label)
+    with pytest.raises(PluginError) as ei:
+        _driver(tmp_path, pub).validate(path)
+    assert ei.value.detail.get("violation") == "static_scan.exec"

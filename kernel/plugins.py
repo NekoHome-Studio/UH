@@ -441,6 +441,17 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
                     findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": mod or ",".join(sorted(submodules))})
 
         # 四轮对抗修复：跟踪简单赋值别名（g = getattr / f = os.system），此前 g(os,'system') 绕过
+        # 五轮扩展：容器存危险 callable（d={'k':os.system} / l=[os.system]）与类属性（class A: m=os.system）
+        container_danger: set[str] = set()   # 存过危险 callable 的容器/类名
+        def _dangerous_value(v: ast.expr) -> str | None:
+            if isinstance(v, ast.Name):
+                lbl = aliases.get(v.id, v.id)
+                return lbl if (lbl in _DANGEROUS_CALLS or lbl.rsplit(".", 1)[-1] in _DANGEROUS_TAILS) else None
+            if isinstance(v, ast.Attribute) and isinstance(v.value, ast.Name):
+                base = aliases.get(v.value.id, v.value.id)
+                lbl = f"{base}.{v.attr}"
+                return lbl if (lbl in _DANGEROUS_CALLS or v.attr in _DANGEROUS_TAILS) else None
+            return None
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
                 target = node.targets[0].id
@@ -449,6 +460,20 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
                 elif isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name):
                     base = aliases.get(node.value.value.id, node.value.value.id)
                     aliases[target] = f"{base}.{node.value.attr}"
+                elif isinstance(node.value, (ast.Dict, ast.List, ast.Tuple, ast.Set)):
+                    parts = list(node.value.values) if isinstance(node.value, ast.Dict) else list(node.value.elts)
+                    hits = [h for h in (_dangerous_value(p) for p in parts if p is not None) if h]
+                    if hits:
+                        container_danger.add(target)
+                        findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": f"容器存入危险调用 {hits[0]}"})
+            # 类体内属性赋危险 callable
+            if isinstance(node, ast.ClassDef):
+                for stmt in node.body:
+                    if isinstance(stmt, ast.Assign):
+                        hits = [h for h in (_dangerous_value(stmt.value) if stmt.value is not None else None,) if h]
+                        if hits:
+                            container_danger.add(node.name)
+                            findings.append({"file": name, "line": stmt.lineno, "kind": "exec_danger", "detail": f"类属性存入危险调用 {hits[0]}"})
 
         def resolve(func: ast.expr) -> str:
             if isinstance(func, ast.Name):
@@ -477,6 +502,13 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
             # getattr(obj, 'system') 动态取危险属性（含别名归一后的 *.getattr）
             if tail == "getattr" and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value in _DANGEROUS_ATTRS:
                 danger = True
+            # 五轮：危险 callable 作为实参传递（functools.partial(os.system,...) / map(os.system,...)）
+            for arg in node.args:
+                lbl_arg = resolve(arg) if isinstance(arg, (ast.Name, ast.Attribute)) else ""
+                if lbl_arg and (lbl_arg in _DANGEROUS_CALLS or lbl_arg.rsplit(".", 1)[-1] in _DANGEROUS_TAILS):
+                    danger = True
+                    label = label or f"pass-dangerous:{lbl_arg}"
+                    break
             # 下标取属性动态调用：vars(os)['system'] / os.__dict__['system'] / __builtins__['__import__']
             if isinstance(node.func, ast.Subscript) and isinstance(node.func.slice, ast.Constant) and node.func.slice.value in _DANGEROUS_ATTRS | {"__import__", "eval", "exec", "getattr"}:
                 danger = True
