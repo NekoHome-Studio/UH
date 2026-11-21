@@ -53,10 +53,13 @@ risk_level: read-only          # read-only / write-host / irreversible
 permissions:                   # 沙箱权限声明（未声明则拒绝）
   - fs.sandbox.read
   - fs.sandbox.write
-config:
+  # - network.outbound         # 需出网时声明，并配下方 network 节点
+config:                        # configBase：仅 timeout_ms/memory_limit_mb/rate_limit，禁 allow_hosts
   timeout_ms: 5000
   memory_limit_mb: 64
-  allow_hosts: []              # 出网白名单；子域用 *.example.com
+# network:                     # 出网白名单是顶层 network 节点（非 config）；allow_hosts 必填且 ≥1 项
+#   allow_hosts:
+#     - example.com            # 子域用 *.example.com
 ```
 
 ### 3. main.py（复用 SDK）
@@ -89,8 +92,8 @@ uh plugin dev ./my-tool --once                       # 灌入 initialize→tools
 
 ### 5. 打包与签名（生产安装）
 生产安装须签名 `.uhpkg`（zip）。签名算法：
-1. 规范化摘要：对除 `SIGNATURE` 外的所有条目按文件名排序，`sha256( len(name)4字节大端 + name + len(content)4字节大端 + content ... )`（见 `kernel/plugins.py::_canonical_digest`）。
-2. Ed25519 over digest：`SIGNATURE` 文件为 JSON `{algorithm: ed25519, key_id, public_key(base64 raw), signature(base64)}`。
+1. 规范化摘要：对除 `SIGNATURE` 外的所有条目按文件名排序，`sha256( len(name)4字节大端 + name + len(content)8字节大端 + content ... )`（见 `kernel/plugins.py::_canonical_digest`，注意内容长度是 **8 字节**）。
+2. Ed25519 over digest：`SIGNATURE` 文件为 JSON `{algorithm: ed25519, key_id, digest(规范化摘要hex), signature(base64)}`（四字段均必填字符串，见 `_read_signature`；公钥放信任库不放 SIGNATURE）。
 3. 信任库：服务端 `UH_PLUGIN_TRUSTED_KEYS_FILE` 指向 `{key_id: public_key_base64}` JSON；未受信密钥拒装（SBX-06）。
 
 > 注：当前无 `uh plugin pack/sign` 子命令，签名包需按上述算法自行构造（参考 tests/unit/test_plugins.py::_make_package）。pack/sign CLI 列入 M2 后续。
@@ -99,7 +102,7 @@ uh plugin dev ./my-tool --once                       # 灌入 initialize→tools
 | 权限 | 作用 |
 |---|---|
 | fs.sandbox.read / fs.sandbox.write | 沙箱目录内读/写（越界拒绝 UH-KRN-2010） |
-| network.allow_hosts | 出网白名单（config.allow_hosts，子域 *.example.com） |
+| network.outbound + network.allow_hosts | 出网白名单（顶层 network 节点，非 config；子域 *.example.com） |
 | tool.invoke | 调用其他工具（经内核 RPC） |
 
 ### 已知局限

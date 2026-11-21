@@ -258,6 +258,46 @@ def test_static_scan_flags_network_import(tmp_path):
     assert any(f["kind"] == "network" for f in info["static_scan"])
 
 
+@pytest.mark.parametrize("src", [
+    b"import subprocess as sp\nsp.Popen(['x'])\n",
+    b"from os import system\nsystem('whoami')\n",
+    b"import os\ngetattr(os, 'system')('whoami')\n",
+    b"import importlib\nimportlib.import_module('socket')\n",
+    b"import os as o\no.system('x')\n",
+])
+def test_static_scan_rejects_bypass_variants(tmp_path, src):
+    # R-1：别名/from-import/getattr/importlib 绕过均拒绝
+    package = tmp_path / "bypass.uhpkg"
+    public = _make_package(package, name="bypass", extra_entries={"main.py": src})
+    driver = PluginDriver(root=tmp_path / "plugins", registry_path=tmp_path / "plugins.json", security=PluginSecurityConfig(trusted_keys={"test": public}))
+    with pytest.raises(PluginError) as raised:
+        driver.validate(package)
+    assert raised.value.detail.get("violation") == "static_scan.exec"
+
+
+def test_static_scan_rejects_js_entry(tmp_path):
+    # R-1：JS 入口危险调用纳入扫描
+    package = tmp_path / "js.uhpkg"
+    public = _make_package(package, name="js", extra_entries={"main.mjs": b"require('child_process').execSync('x')\n"})
+    driver = PluginDriver(root=tmp_path / "plugins", registry_path=tmp_path / "plugins.json", security=PluginSecurityConfig(trusted_keys={"test": public}))
+    with pytest.raises(PluginError) as raised:
+        driver.validate(package)
+    assert raised.value.detail.get("violation") == "static_scan.exec"
+
+
+def test_tool_subprocess_env_strips_credentials(tmp_path, monkeypatch):
+    # R-2：tool 子进程环境剥离内核凭据
+    monkeypatch.setenv("UH_AUTH_TOKEN", "SUPER-SECRET-PROBE")
+    monkeypatch.setenv("UH_AUTH_TOKEN_FILE", "/secret/token.txt")
+    from kernel.sandbox import SandboxRunner
+    from kernel.plugins import PluginManifest
+    runner = SandboxRunner(enforce=False, root=tmp_path)
+    manifest = PluginManifest.from_dict({"name": "t", "version": "1.0.0", "type": "tool", "description": "x", "author": "a", "license": "MIT", "entry": "main.py", "permissions": [], "risk_level": "read-only", "config": {"timeout_ms": 1000, "memory_limit_mb": 16}})
+    plan = runner.build_plan(manifest, tmp_path)
+    assert "UH_AUTH_TOKEN" not in plan.env
+    assert "UH_AUTH_TOKEN_FILE" not in plan.env
+
+
 def test_package_path_traversal_is_rejected(tmp_path):
     package = tmp_path / "bad.uhpkg"
     with zipfile.ZipFile(package, "w") as archive:

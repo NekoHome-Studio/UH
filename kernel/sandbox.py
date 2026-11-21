@@ -407,7 +407,10 @@ class SandboxRunner:
             env = {name: os.environ[name] for name in ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE") if name in os.environ}
             env["PATH"] = os.defpath
         else:
+            # R-2（复检安全）：tool 子进程继承运行时环境，但剥离内核凭据，防签名但越权的插件夺 bearer token。
             env = os.environ.copy()
+            for _cred in ("UH_AUTH_TOKEN", "UH_AUTH_TOKEN_FILE", "UH_WS_AUTH_TOKEN", "UH_WS_TOKEN", "UH_LLM_API_KEY", "UH_REDIS_URL", "UH_PLUGIN_TRUSTED_KEYS_FILE"):
+                env.pop(_cred, None)
         sdk_root = Path(__file__).resolve().parent.parent
         if manifest.type == "tool":
             env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(sdk_root), env.get("PYTHONPATH"))))

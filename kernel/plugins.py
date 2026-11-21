@@ -382,36 +382,62 @@ _DANGEROUS_CALLS = {"os.system", "os.popen", "os.execv", "os.execve", "os.spawnl
 _NETWORK_MODULES = {"socket", "http.client", "urllib.request", "requests", "aiohttp", "httpx", "websocket", "websockets"}
 
 
+_JS_DANGER = re.compile(r"child_process|execSync|\bexec\s*\(|\beval\s*\(|new\s+Function|\bspawn\s*\(")
+_DANGEROUS_ATTRS = {"system", "popen", "execv", "execve", "spawnl", "spawnle", "Popen", "run", "call", "check_output", "check_call"}
+
+
 def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
-    """SBX-02 出网/危险调用静态扫描：AST 检测危险 exec 与出网导入。"""
+    """SBX-02 出网/危险调用静态扫描（R-1 加固）：别名归一 + from-import + 动态调用 + JS 入口。"""
     findings: list[dict[str, Any]] = []
     for name, content in entries.items():
+        if name.endswith((".js", ".mjs", ".cjs", ".ts")):
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            for i, line in enumerate(text.splitlines(), 1):
+                if _JS_DANGER.search(line):
+                    findings.append({"file": name, "line": i, "kind": "exec_danger", "detail": "js危险调用"})
+            continue
         if not name.endswith(".py"):
             continue
         try:
             tree = ast.parse(content.decode("utf-8"), filename=name)
         except (SyntaxError, UnicodeDecodeError):
             continue
+        aliases: dict[str, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                for alias in node.names:
-                    root = alias.name.split(".")[0]
-                    if alias.name in _NETWORK_MODULES or root in _NETWORK_MODULES:
-                        findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": alias.name})
+                for a in node.names:
+                    aliases[a.asname or a.name.split(".")[0]] = a.name
+                    if a.name in _NETWORK_MODULES or a.name.split(".")[0] in _NETWORK_MODULES:
+                        findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": a.name})
             elif isinstance(node, ast.ImportFrom):
                 mod = node.module or ""
+                for a in node.names:
+                    aliases[a.asname or a.name] = f"{mod}.{a.name}" if mod else a.name
                 if mod in _NETWORK_MODULES or mod.split(".")[0] in _NETWORK_MODULES:
                     findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": mod})
-            elif isinstance(node, ast.Call):
-                func = node.func
-                label = ""
-                if isinstance(func, ast.Attribute):
-                    base = func.value.id if isinstance(func.value, ast.Name) else ""
-                    label = f"{base}.{func.attr}" if base else func.attr
-                elif isinstance(func, ast.Name):
-                    label = func.id
-                if label in _DANGEROUS_CALLS:
-                    findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": label})
+
+        def resolve(func: ast.expr) -> str:
+            if isinstance(func, ast.Name):
+                return aliases.get(func.id, func.id)
+            if isinstance(func, ast.Attribute):
+                base = func.value.id if isinstance(func.value, ast.Name) else ""
+                base = aliases.get(base, base)
+                return f"{base}.{func.attr}" if base else func.attr
+            return ""
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            label = resolve(node.func)
+            danger = label in _DANGEROUS_CALLS or label.endswith(".import_module") or label in {"getattr", "__import__", "eval", "exec"}
+            # getattr(obj, 'system') 动态取危险属性
+            if label == "getattr" and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value in _DANGEROUS_ATTRS:
+                danger = True
+            if danger:
+                findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": label or "dynamic_call"})
     return findings
 
 
