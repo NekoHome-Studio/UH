@@ -350,7 +350,9 @@ def plugin_dev(args) -> int:
 
     def start():
         nonlocal process
-        process = subprocess.Popen(list(plan.command), cwd=str(plan.cwd), env=env)
+        # F3：--once 需 stdio 管道灌 JSON-RPC；热重载模式保持继承（插件自行走 stdio）
+        pipes = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE} if args.once else {}
+        process = subprocess.Popen(list(plan.command), cwd=str(plan.cwd), env=env, **pipes)
 
     def stop():
         nonlocal process
@@ -362,10 +364,42 @@ def plugin_dev(args) -> int:
                 process.kill()
         process = None
 
+    def handshake_once() -> int:
+        """F3 修复：--once 真灌 MCP 握手（initialize→tools/list→tools/call）并打印响应，
+        而非静默 start+wait（此前 rc=0 无输出，第三方无法判断插件可用）。"""
+        assert process is not None and process.stdin and process.stdout
+        def rpc(payload: dict) -> dict | None:
+            assert process is not None and process.stdin and process.stdout
+            process.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+            process.stdin.flush()
+            line = process.stdout.readline()
+            if not line:
+                return None
+            try:
+                return json.loads(line.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                return {"raw": line.decode("utf-8", errors="replace").rstrip()}
+        init = rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "uh-dev", "version": "0.1.0"}}})
+        print(json.dumps({"request": "initialize", "response": init}, ensure_ascii=False))
+        if init is None:
+            print("插件未响应 initialize（进程可能已退出）", file=sys.stderr)
+            return 1
+        listed = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        print(json.dumps({"request": "tools/list", "response": listed}, ensure_ascii=False))
+        tools_ = ((listed or {}).get("result") or {}).get("tools") or []
+        if tools_:
+            name = str(tools_[0].get("name", ""))
+            called = rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": name, "arguments": {}}})
+            print(json.dumps({"request": "tools/call", "tool": name, "response": called}, ensure_ascii=False))
+        return 0
+
     try:
         start()
         if args.once:
-            return process.wait()
+            try:
+                return handshake_once()
+            finally:
+                stop()
         mtimes = {path: path.stat().st_mtime_ns for path in watched if path.exists()}
         while True:
             time.sleep(0.5)

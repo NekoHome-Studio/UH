@@ -110,13 +110,20 @@ class ToolPlugin:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         definition = self._tools.get(name)
         if definition is None:
-            raise KeyError(name)
+            raise UnknownToolError(name)
         value = definition.handler(arguments, self.context)
         if inspect.isawaitable(value):
             value = await value
         if isinstance(value, list) and all(isinstance(item, dict) and isinstance(item.get("type"), str) for item in value):
             return value
+        # F9：dict/list 等结构化返回序列化为 JSON（此前 str() 产出 Python repr 单引号，MCP 客户端解析失败）
+        if isinstance(value, (dict, list, tuple, int, float, bool)) or value is None:
+            return [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]
         return [{"type": "text", "text": str(value)}]
+
+
+class UnknownToolError(KeyError):
+    """工具名未注册（区别于 handler 内部缺参数的 KeyError）。"""
 
 
 class MCPPluginServer:
@@ -148,8 +155,11 @@ class MCPPluginServer:
                         "isError": True,
                         "structuredContent": {"error": error},
                     }
-                except KeyError:
+                except UnknownToolError:
                     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": f"unknown tool: {name}"}}
+                except KeyError as exc:
+                    # handler 内缺必填参数不应误报 unknown tool（F3 核验时发现）
+                    result = {"content": [{"type": "text", "text": f"missing required argument: {exc}"}], "isError": True}
                 except Exception as exc:
                     result = {"content": [{"type": "text", "text": str(exc)}], "isError": True}
             if denials:

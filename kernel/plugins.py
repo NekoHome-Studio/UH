@@ -390,19 +390,34 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
     """SBX-02 出网/危险调用静态扫描（R-1 加固）：别名归一 + from-import + 动态调用 + JS 入口。"""
     findings: list[dict[str, Any]] = []
     for name, content in entries.items():
-        if name.endswith((".js", ".mjs", ".cjs", ".ts")):
-            try:
-                text = content.decode("utf-8")
-            except UnicodeDecodeError:
-                continue
+        lowered = name.lower()
+        # F6：原生二进制/脚本入口无 AST 可解析 → 一律标记（不可静态验证即不放行）
+        if lowered.endswith((".exe", ".dll", ".so", ".dylib", ".bin", ".bat", ".cmd", ".ps1", ".sh", ".vbs", ".com", ".scr")):
+            findings.append({"file": name, "line": 1, "kind": "exec_danger", "detail": "原生/脚本入口不可静态验证"})
+            continue
+        if lowered.endswith((".js", ".mjs", ".cjs", ".ts")):
+            text = content.decode("utf-8", errors="replace")
             for i, line in enumerate(text.splitlines(), 1):
                 if _JS_DANGER.search(line):
                     findings.append({"file": name, "line": i, "kind": "exec_danger", "detail": "js危险调用"})
             continue
-        if not name.endswith(".py"):
+        if not lowered.endswith(".py"):
             continue
+        # F5：非 UTF-8 源码（coding cookie 混淆）不得静默跳过——按声明编码解码，失败即标记
         try:
-            tree = ast.parse(content.decode("utf-8"), filename=name)
+            source = content.decode("utf-8")
+        except UnicodeDecodeError:
+            import codecs
+            cookie = re.search(rb"coding[:=]\s*([-\w.]+)", content[:200])
+            try:
+                source = content.decode(cookie.group(1).decode("ascii")) if cookie else None
+            except (LookupError, UnicodeDecodeError):
+                source = None
+            if source is None:
+                findings.append({"file": name, "line": 1, "kind": "exec_danger", "detail": "源码编码无法解析，拒绝静态放行"})
+                continue
+        try:
+            tree = ast.parse(source, filename=name)
         except (SyntaxError, UnicodeDecodeError):
             continue
         aliases: dict[str, str] = {}
@@ -416,8 +431,10 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
                 mod = node.module or ""
                 for a in node.names:
                     aliases[a.asname or a.name] = f"{mod}.{a.name}" if mod else a.name
-                if mod in _NETWORK_MODULES or mod.split(".")[0] in _NETWORK_MODULES:
-                    findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": mod})
+                # F7：from urllib import request → urllib.request 也算出网导入
+                submodules = {f"{mod}.{a.name}" for a in node.names} if mod else set()
+                if mod in _NETWORK_MODULES or mod.split(".")[0] in _NETWORK_MODULES or any(s in _NETWORK_MODULES for s in submodules):
+                    findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": mod or ",".join(sorted(submodules))})
 
         def resolve(func: ast.expr) -> str:
             if isinstance(func, ast.Name):
@@ -782,6 +799,16 @@ class PluginDriver:
             manifest = _validate_manifest(_read_manifest_from_bytes(raw_manifest, str(package)), package_entries=set(members) | {"manifest.yaml"})
             if manifest.type == "theme":
                 self._validate_theme_sizes({name: info.file_size for name, info in members.items() if name != SIGNATURE_FILE})
+            # F8：解压前按 ZipInfo.file_size 预检体积，防 zip bomb 打爆内核内存（非主题包此前无上限）
+            _MAX_MEMBER = 32 * 1024 * 1024
+            _MAX_TOTAL = 128 * 1024 * 1024
+            sizes = {name: int(info.file_size) for name, info in members.items()}
+            oversized = [n for n, s in sizes.items() if s > _MAX_MEMBER]
+            if oversized:
+                raise PluginValidationError("插件包单文件解压体积超限", detail={"limit_bytes": _MAX_MEMBER, "files": oversized[:5]})
+            total = sum(sizes.values()) + len(raw_manifest)
+            if total > _MAX_TOTAL:
+                raise PluginValidationError("插件包解压总体积超限", detail={"limit_bytes": _MAX_TOTAL, "total_bytes": total})
             entries = {"manifest.yaml": raw_manifest, **{name: archive.read(info) for name, info in members.items()}}
         self._validate_theme_entries(manifest, entries)
         content_entries = [(name, content) for name, content in entries.items() if name != SIGNATURE_FILE]

@@ -98,7 +98,14 @@ class SandboxPolicy:
                 self._deny("插件未声明沙箱读权限", str(value), "fs.sandbox.read", "fs.sandbox.read")
             return candidate.resolve()
         if not write and "fs.host.read" in self.permissions:
-            return candidate.resolve()
+            # F2 修复（二轮复检）：fs.host.read 不得读内核凭据/运行态（曾经此通道夺 bearer token）
+            resolved = candidate.resolve()
+            lowered = str(resolved).lower().replace("\\", "/")
+            base = lowered.rsplit("/", 1)[-1]
+            _sensitive = (".auth-token", "auth-token", ".env", "id_ed25519", "id_rsa", "credentials")
+            if any(tok in base for tok in _sensitive) or "token" in base or "trusted_keys" in base or "/.uh/" in lowered or "/.ssh/" in lowered:
+                self._deny("插件试图读取内核凭据或运行态文件", str(value), "fs.host.read", "filesystem.sensitive")
+            return resolved
         self._deny("插件越权访问文件", str(value), "fs.sandbox.write" if write else "fs.host.read", "filesystem")
 
     def check_host(self, host_or_url: str) -> str:
@@ -407,10 +414,15 @@ class SandboxRunner:
             env = {name: os.environ[name] for name in ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE") if name in os.environ}
             env["PATH"] = os.defpath
         else:
-            # R-2（复检安全）：tool 子进程继承运行时环境，但剥离内核凭据，防签名但越权的插件夺 bearer token。
-            env = os.environ.copy()
-            for _cred in ("UH_AUTH_TOKEN", "UH_AUTH_TOKEN_FILE", "UH_WS_AUTH_TOKEN", "UH_WS_TOKEN", "UH_LLM_API_KEY", "UH_REDIS_URL", "UH_PLUGIN_TRUSTED_KEYS_FILE"):
-                env.pop(_cred, None)
+            # F1 修复（二轮复检）：改白名单 passthrough——denylist 与内核演进天然不同步
+            # （曾漏 UH_CLIENT_ID_SECRET/UH_MEMORY_MASTER_KEY/UH_MEMORY_EXPORT_TOKEN/UH_CHECKPOINT_POSTGRES_URL）。
+            # 只放行 OS 运行时 + 解释器必需变量；任何 UH_* 一律不进子进程（沙箱参数下方显式注入）。
+            _passthrough = ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT",
+                            "PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONIOENCODING", "PYTHONUTF8",
+                            "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+                            "LANG", "LC_ALL", "TZ", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE")
+            env = {name: os.environ[name] for name in _passthrough if name in os.environ}
+            env.setdefault("PATH", os.defpath)
         sdk_root = Path(__file__).resolve().parent.parent
         if manifest.type == "tool":
             env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(sdk_root), env.get("PYTHONPATH"))))
