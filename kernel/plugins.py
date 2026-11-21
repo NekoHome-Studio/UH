@@ -492,6 +492,23 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
                 return resolve(func.func)
             return ""
 
+        # 七轮通用兜底：危险 callable 只要被「引用」（不限于直接调用点）即标记。
+        # 覆盖函数/方法返回、attrgetter、动态类 type()、星号解包、字典解包、iter/next 等一切传递路径——
+        # 静态扫描无法穷举数据流，故对危险属性的任何读取一律拒绝（审查辅助定位，宁严勿漏）。
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in _DANGEROUS_TAILS:
+                findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": f"引用危险属性 {node.attr}"})
+            elif isinstance(node, ast.Name) and node.id in {"eval", "exec", "__import__", "getattr"}:
+                findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": f"引用危险内建 {node.id}"})
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in _DANGEROUS_ATTRS | {"eval", "exec", "__import__", "system"}:
+                findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": f"危险名字符串 {node.value}"})
+            # 八轮：反射/内省 API 一律拒绝——动态构造名（chr() 拼接）无法静态判定，
+            # 故凡 __getattribute__/__dict__/vars/globals/locals/dir/chr 组合取值路径全封（宁严勿漏）。
+            elif isinstance(node, ast.Attribute) and node.attr in {"__getattribute__", "__dict__", "__globals__", "__builtins__", "__class__", "__base__", "__subclasses__"}:
+                findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": f"反射内省属性 {node.attr}"})
+            elif isinstance(node, ast.Name) and node.id in {"vars", "globals", "locals", "dir", "chr", "compile", "setattr", "delattr"}:
+                findings.append({"file": name, "line": node.lineno, "kind": "exec_danger", "detail": f"反射内建 {node.id}"})
+
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

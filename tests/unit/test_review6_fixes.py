@@ -230,3 +230,49 @@ def test_scan_rejects_round6_residual(tmp_path, src, label):
     with pytest.raises(PluginError) as ei:
         _driver(tmp_path, pub).validate(path)
     assert ei.value.detail.get("violation") == "static_scan.exec"
+
+
+# --- 七轮：通用兜底（危险 callable 被引用即拒，覆盖返回/解包/迭代/动态类等一切传递路径）---
+@pytest.mark.parametrize("src,label", [
+    (b"import os\nclass A:\n    def f(self):\n        return os.system\nA().f()('id')\n", "method-return"),
+    (b"import os\ndef g():\n    return os.system\ng()('id')\n", "func-return"),
+    (b"import os, operator\noperator.attrgetter('system')(os)('id')\n", "attrgetter"),
+    (b"import os\n(type('X',(),{'m':os.system}))().m('id')\n", "dynamic-class"),
+    (b"import os\n[*[os.system]][0]('id')\n", "starred-unpack"),
+    (b"import os\n{**{'m':os.system}}['m']('id')\n", "dict-unpack"),
+    (b"import os\nnext(iter([os.system]))('id')\n", "iter-next"),
+])
+def test_scan_universal_fallback_rejects_references(tmp_path, src, label):
+    from kernel.plugins import PluginError
+    path, pub = _pkg(tmp_path, {"main.py": src}, name=label)
+    with pytest.raises(PluginError) as ei:
+        _driver(tmp_path, pub).validate(path)
+    assert ei.value.detail.get("violation") == "static_scan.exec"
+
+
+def test_scan_allows_benign_plugin(tmp_path):
+    # 兜底不得误伤正常插件（无危险属性引用）
+    path, pub = _pkg(tmp_path, {"main.py": b"import json\ndef run(args):\n    return json.dumps({'ok': True})\n"}, name="benign")
+    info = _driver(tmp_path, pub).validate(path)
+    assert info["status"] == "validated"
+    assert not [f for f in info["static_scan"] if f["kind"] == "exec_danger"]
+
+
+# --- 八轮：反射/内省兜底（动态 chr() 构造名无法静态判定，一律封反射路径）---
+_CHR = "chr(115)+chr(121)+chr(115)+chr(116)+chr(101)+chr(109)"
+
+
+@pytest.mark.parametrize("tpl,label", [
+    ("import os\nos.__dict__[{c}]('id')\n", "dict-chr"),
+    ("import os\nos.__getattribute__({c})('id')\n", "getattribute-chr"),
+    ("import os\nvars(os).get({c})('id')\n", "vars-get-chr"),
+    ("import os\nglobals()['os'].system('id')\n", "globals-ref"),
+    ("import os\nsetattr(__builtins__,'x',os.system)\nx('id')\n", "setattr-ref"),
+])
+def test_scan_rejects_reflection_paths(tmp_path, tpl, label):
+    from kernel.plugins import PluginError
+    src = tpl.format(c=_CHR).encode()
+    path, pub = _pkg(tmp_path, {"main.py": src}, name=label)
+    with pytest.raises(PluginError) as ei:
+        _driver(tmp_path, pub).validate(path)
+    assert ei.value.detail.get("violation") == "static_scan.exec"
