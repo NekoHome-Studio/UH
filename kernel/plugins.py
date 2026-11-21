@@ -440,6 +440,16 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
                 if mod in _NETWORK_MODULES or mod.split(".")[0] in _NETWORK_MODULES or any(s in _NETWORK_MODULES for s in submodules):
                     findings.append({"file": name, "line": node.lineno, "kind": "network", "detail": mod or ",".join(sorted(submodules))})
 
+        # 四轮对抗修复：跟踪简单赋值别名（g = getattr / f = os.system），此前 g(os,'system') 绕过
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                target = node.targets[0].id
+                if isinstance(node.value, ast.Name):
+                    aliases[target] = aliases.get(node.value.id, node.value.id)
+                elif isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name):
+                    base = aliases.get(node.value.value.id, node.value.value.id)
+                    aliases[target] = f"{base}.{node.value.attr}"
+
         def resolve(func: ast.expr) -> str:
             if isinstance(func, ast.Name):
                 return aliases.get(func.id, func.id)
@@ -447,6 +457,9 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
                 base = func.value.id if isinstance(func.value, ast.Name) else ""
                 base = aliases.get(base, base)
                 return f"{base}.{func.attr}" if base else func.attr
+            # 嵌套调用返回 callable（如 getattr(os,'system')(...)）：解析内层以捕获危险取值
+            if isinstance(func, ast.Call):
+                return resolve(func.func)
             return ""
 
         for node in ast.walk(tree):

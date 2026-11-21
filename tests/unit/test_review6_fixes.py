@@ -181,3 +181,18 @@ def test_scan_rejects_round3_bypasses(tmp_path, src, label):
     with pytest.raises(PluginError) as ei:
         _driver(tmp_path, pub).validate(path)
     assert ei.value.detail.get("violation") == "static_scan.exec"
+
+
+# --- 四轮对抗（v4-bypass 实测指出 g=getattr 赋值别名绕过）---
+@pytest.mark.parametrize("src,label", [
+    (b"import os\ng = getattr\ng(os,'system')('id')\n", "assign-getattr"),
+    (b"import os\nf = os.system\nf('id')\n", "assign-system"),
+    (b"e = eval\ne('1')\n", "assign-eval"),
+    (b"import os\ngetattr(os,'sys'+'tem')('id')\n", "concat-attr"),
+])
+def test_scan_rejects_round4_alias_bypasses(tmp_path, src, label):
+    from kernel.plugins import PluginError
+    path, pub = _pkg(tmp_path, {"main.py": src}, name=label)
+    with pytest.raises(PluginError) as ei:
+        _driver(tmp_path, pub).validate(path)
+    assert ei.value.detail.get("violation") == "static_scan.exec"
