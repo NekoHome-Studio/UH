@@ -13,6 +13,7 @@ import contextvars
 import fnmatch
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -159,9 +160,17 @@ class SandboxProcess:
             self.job.close()
 
     async def wait(self, timeout_s: float | None = None) -> int:
+        """SBX-03：超时须强杀并抛 CAP-5021，而非仅把 TimeoutExpired 透传给调用方。"""
         if timeout_s is None:
             return await asyncio.to_thread(self.process.wait)
-        return await asyncio.to_thread(self.process.wait, timeout=timeout_s)
+        try:
+            return await asyncio.to_thread(self.process.wait, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            self.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(self.process.wait, timeout=3)
+            raise SandboxError("UH-CAP-5021", "插件执行超时", retryable=True,
+                               detail={"violation": "timeout", "timeout_s": timeout_s}) from None
 
 
 class ProcessPluginLoader:
@@ -460,7 +469,32 @@ class SandboxRunner:
             if manifest.type == "tool":
                 wrapped.extend(["--ro-bind", str(sdk_root / "kernel"), "/uh-sdk/kernel"])
                 env["PYTHONPATH"] = "/uh-sdk"
-            wrapped += command
+                # SBX Linux 修复：venv/自定义解释器不在 /usr 下时须挂进沙箱，
+                # 否则 bwrap execvp 报 No such file or directory（Kylin 实测）。
+                exe = Path(command[0])
+                if exe.is_absolute() and not str(exe).startswith(("/usr/", "/bin/", "/lib")):
+                    binds: set[str] = set()
+                    interp_root = exe.parent.parent          # .venv/bin/python -> .venv
+                    binds.add(str(interp_root if interp_root.exists() else exe.parent))
+                    # venv python 常为符号链接，指向真实解释器（如 uv 装的 ~/.local/share/uv/...）；
+                    # 必须把 resolve 后的真实路径一并挂入，否则 execvp 仍 No such file。
+                    try:
+                        real = exe.resolve()
+                        if real != exe:
+                            binds.add(str(real.parent.parent if real.parent.name == "bin" else real.parent))
+                    except OSError:
+                        pass
+                    for b in sorted(binds):
+                        if Path(b).exists():
+                            wrapped.extend(["--ro-bind", b, b])
+            # SBX-04：Linux 无 Job Object，用 ulimit -v 限制虚拟内存（KB），
+            # 超限触发 MemoryError/进程失败，等价 Windows 的 per-process 限额。
+            mem_mb = int(manifest.config.get("memory_limit_mb", 256))
+            if mem_mb > 0:
+                inner = " ".join(shlex.quote(str(x)) for x in command)
+                wrapped += ["/bin/sh", "-c", f"ulimit -v {mem_mb * 1024}; exec {inner}"]
+            else:
+                wrapped += command
             return SandboxPlan(tuple(wrapped), package_path, env, "linux")
         if self.enforce:
             raise SandboxError("UH-KRN-2010", "当前平台没有可用的 M2 沙箱运行器", detail={"plugin": manifest.name, "violation": "sandbox_unavailable"})
