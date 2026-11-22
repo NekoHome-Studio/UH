@@ -108,3 +108,19 @@ uh plugin dev ./my-tool --once                       # 灌入 initialize→tools
 ### 已知局限
 - 生产态签名工具子进程需能导入 kernel（PYTHONPATH 含仓库根）；生产能力目录调用闭环与启动重激活见 M2-1 后续。
 - web-search 官方示例返回 proxy_required（真实搜索代理待接通）。
+
+## 调用规范补充（Kylin 跨网部署实测）
+
+### query token 必须 URL-encode
+鉴权 token 为 base64，可能含 `+` `/` `=`。**`+` 在 query string 中会被解析为空格，导致 401**。
+```python
+import urllib.parse
+tok = urllib.parse.quote(open('.auth-token').read().strip(), safe='')
+# GET /api/v1/themes?token={tok}
+```
+或改用 `Authorization: Bearer <token>` 头（不受 URL 编码影响）。WS 只能用 query，故**必须编码**。
+
+### 发消息须携带 client_id
+`POST /api/v1/sessions` 响应含 `client_id` 身份凭据（五审双因子归属校验）。后续 messages / tasks / confirm 请求必须带上，否则 `UH-USR-1002`。同样需 URL-encode。
+
+> 详见 docs/deployment/kylin-userland.md §4。
