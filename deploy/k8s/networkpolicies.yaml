@@ -1,0 +1,135 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny, namespace: uh-prod }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-dns, namespace: uh-prod }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: kernel-ingress, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-kernel } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-controller } }
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: capability-ingress-from-kernel, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { tier: capability } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: uh-kernel } } }]
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: kernel-egress-capabilities, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-kernel } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { tier: capability } } }]
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: kernel-egress-datastores, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-kernel } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app: uh-redis } } }]
+      ports: [{ port: 6379 }]
+    - to: [{ podSelector: { matchLabels: { app: uh-chroma } } }]
+      ports: [{ port: 8000 }]
+    - to: [{ podSelector: { matchLabels: { app: uh-postgres } } }]
+      ports: [{ port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: capability-egress-datastores, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-langgraph } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app: uh-redis } } }]
+      ports: [{ port: 6379 }]
+    - to: [{ podSelector: { matchLabels: { app: uh-postgres } } }]
+      ports: [{ port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: capability-egress-datastores-llama-index, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-llama-index } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app: uh-chroma } } }]
+      ports: [{ port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: redis-ingress, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-redis } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: uh-kernel } }
+        - podSelector: { matchLabels: { app: uh-langgraph } }
+      ports: [{ port: 6379 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: chroma-ingress, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-chroma } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: uh-kernel } }
+        - podSelector: { matchLabels: { app: uh-llama-index } }
+      ports: [{ port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: postgres-ingress, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-postgres } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: uh-kernel } }
+        - podSelector: { matchLabels: { app: uh-langgraph } }
+      ports: [{ port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: llm-egress, namespace: uh-prod }
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [uh-kernel, uh-crewai] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        # Replace the documentation-only address with approved external LLM endpoint IPs.
+        - ipBlock: { cidr: 192.0.2.1/32 }
+      ports: [{ port: 443 }]

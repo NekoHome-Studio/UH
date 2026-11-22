@@ -1,0 +1,39 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: uh-llama-index, namespace: uh-prod }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: uh-llama-index }
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: uh-langgraph, namespace: uh-prod }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: uh-langgraph }
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: uh-crewai, namespace: uh-prod }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: uh-crewai }
+  # A zero target suspends this CPU HPA until the kernel scaler wakes it.
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }

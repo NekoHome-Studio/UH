@@ -35,6 +35,7 @@ from .orchestration import OrchestrationService, OrchestrationError
 from .confirmation import ConfirmationManager, ConfirmationError
 from .plugins import PluginDriver, PluginError
 from .sandbox import SandboxRunner
+from .scaler import CrewAIScaler
 from .hooks import HookManager, HookPluginLoader
 from .themes import clear_uninstalled_theme, installed_theme, select_theme, theme_asset, theme_catalog
 
@@ -221,6 +222,7 @@ def _bearer_token(value: str | None) -> str | None:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
+    app.state.scaler = CrewAIScaler()
     app.state.idempotency_cache = {}
     app.state.sessions = set()  # 三审 P1-6：会话注册表（存在性校验）
     app.state.session_owners = {}

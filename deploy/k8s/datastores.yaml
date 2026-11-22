@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: uh-prod
+  labels: { app: uh-redis, tier: datastore }
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels: { app: uh-redis, tier: datastore }
+  template:
+    metadata:
+      labels: { app: uh-redis, tier: datastore }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--appendonly", "yes"]
+          ports: [{ name: redis, containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+          volumeMounts: [{ name: data, mountPath: /data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        # Omit storageClassName to use the cluster default.
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 2Gi }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: chroma
+  namespace: uh-prod
+  labels: { app: uh-chroma, tier: datastore }
+spec:
+  serviceName: chroma
+  replicas: 1
+  selector:
+    matchLabels: { app: uh-chroma, tier: datastore }
+  template:
+    metadata:
+      labels: { app: uh-chroma, tier: datastore }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: chroma
+          image: chromadb/chroma:latest
+          env:
+            - { name: CHROMA_PERSIST_PATH, value: /chroma/db }
+          ports: [{ name: http, containerPort: 8000 }]
+          readinessProbe:
+            httpGet: { path: /api/v2/heartbeat, port: http }
+          volumeMounts: [{ name: data, mountPath: /chroma/db }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 10Gi }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: uh-prod
+  labels: { app: uh-postgres, tier: datastore }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: uh-postgres, tier: datastore }
+  template:
+    metadata:
+      labels: { app: uh-postgres, tier: datastore }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports: [{ name: postgres, containerPort: 5432 }]
+          env:
+            - { name: POSTGRES_DB, value: uh_checkpoints }
+            - { name: POSTGRES_USER, value: uh }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: uh-runtime, key: DB_PASSWORD }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-h", "127.0.0.1", "-U", "uh", "-d", "uh_checkpoints"] }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 10Gi }

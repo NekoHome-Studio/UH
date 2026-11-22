@@ -11,6 +11,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",  # standard 含 websockets，WS 必需（跨机验收踩坑）
     "cryptography>=42",
+    "httpx>=0.27",
     "jsonschema>=4.23",
     "pyyaml>=6",
 ]
@@ -20,7 +21,7 @@ uh = "kernel.cli:main"
 
 [project.optional-dependencies]
 compose = ["redis>=5", "chromadb-client>=1.0,<2", "psycopg[binary]>=3.2,<4", "pypdf>=5"]
-dev = ["pytest>=8", "httpx>=0.27", "redis>=5", "fakeredis>=2"]
+dev = ["pytest>=8", "redis>=5", "fakeredis>=2"]
 retrieval = ["pypdf>=5", "chromadb>=0.5", "llama-index-core>=0.11", "llama-index-vector-stores-chroma>=0.3"]
 orchestration = ["langgraph>=1.2"]
 

@@ -1,0 +1,167 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uh-kernel
+  namespace: uh-prod
+  labels: { app: uh-kernel, tier: kernel }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: uh-kernel, tier: kernel }
+  template:
+    metadata:
+      labels: { app: uh-kernel, tier: kernel }
+    spec:
+      serviceAccountName: uh-scaler
+      containers:
+        - name: kernel
+          image: ultra-harness/kernel:0.1.0
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe:
+            # /ready reports Redis failures in the response body with HTTP 200.
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import json
+                  from urllib.request import urlopen
+                  with urlopen("http://127.0.0.1:8080/ready", timeout=1) as response:
+                      raise SystemExit(0 if json.load(response)["status"] == "ok" else 1)
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          env:
+            - { name: UH_LLM_PROVIDER, value: mock }
+            - { name: UH_LLM_BASE_URL, value: "https://api.openai.com/v1" }
+            - { name: UH_LLM_MODEL, value: gpt-4o-mini }
+            - name: UH_LLM_API_KEY
+              valueFrom:
+                secretKeyRef: { name: uh-runtime, key: UH_LLM_API_KEY }
+            - { name: UH_REDIS_URL, value: "redis://redis:6379" }
+            - { name: UH_RETRIEVAL_BACKEND, value: chroma }
+            - { name: UH_RETRIEVAL_CHROMA, value: "http://chroma:8000" }
+            - { name: UH_CHECKPOINT_BACKEND, value: postgres }
+            - { name: UH_CHECKPOINT_POSTGRES_URL, value: "postgresql://uh@postgres:5432/uh_checkpoints" }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: uh-runtime, key: DB_PASSWORD }
+            - { name: UH_LOCAL_MODE, value: "0" }
+            - { name: UH_AUTH_REQUIRED, value: "1" }
+            - { name: UH_AUTH_TOKEN_FILE, value: /run/secrets/uh_auth_token }
+            - name: UH_CLIENT_ID_SECRET
+              valueFrom:
+                secretKeyRef: { name: uh-runtime, key: UH_CLIENT_ID_SECRET }
+            - name: UH_MEMORY_MASTER_KEY
+              valueFrom:
+                secretKeyRef: { name: uh-runtime, key: UH_MEMORY_MASTER_KEY }
+            - { name: UH_PLUGIN_TRUSTED_KEYS_FILE, value: /run/secrets/uh_plugin_trusted_keys }
+            - { name: UH_PLUGIN_ROOT, value: /app/.uh/plugins }
+          volumeMounts:
+            - { name: runtime, mountPath: /run/secrets, readOnly: true }
+      volumes:
+        - name: runtime
+          secret:
+            secretName: uh-runtime
+            items:
+              - { key: uh_auth_token, path: uh_auth_token }
+              - { key: uh_plugin_trusted_keys, path: uh_plugin_trusted_keys }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uh-llama-index
+  namespace: uh-prod
+  labels: { app: uh-llama-index, tier: capability }
+spec:
+  # HPA owns replicas. Apply the HPA to reach the two-replica floor.
+  selector:
+    matchLabels: { app: uh-llama-index, tier: capability }
+  template:
+    metadata:
+      labels: { app: uh-llama-index, tier: capability }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: llama-index
+          image: ultra-harness/llama-index:0.1.0
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          env:
+            - { name: UH_RETRIEVAL_CHROMA, value: "http://chroma:8000" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uh-langgraph
+  namespace: uh-prod
+  labels: { app: uh-langgraph, tier: capability }
+spec:
+  selector:
+    matchLabels: { app: uh-langgraph, tier: capability }
+  template:
+    metadata:
+      labels: { app: uh-langgraph, tier: capability }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: langgraph
+          image: ultra-harness/langgraph:0.1.0
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          env:
+            - { name: UH_REDIS_URL, value: "redis://redis:6379" }
+            - { name: UH_CHECKPOINT_BACKEND, value: postgres }
+            - { name: UH_CHECKPOINT_POSTGRES_URL, value: "postgresql://uh@postgres:5432/uh_checkpoints" }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: uh-runtime, key: DB_PASSWORD }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uh-crewai
+  namespace: uh-prod
+  labels: { app: uh-crewai, tier: capability }
+spec:
+  replicas: 0
+  selector:
+    matchLabels: { app: uh-crewai, tier: capability }
+  template:
+    metadata:
+      labels: { app: uh-crewai, tier: capability }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: crewai
+          image: ultra-harness/crewai:0.1.0
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          env:
+            - { name: UH_LLM_PROVIDER, value: mock }
+            - { name: UH_LLM_BASE_URL, value: "https://api.openai.com/v1" }
+            - { name: UH_LLM_MODEL, value: gpt-4o-mini }
+            - name: UH_LLM_API_KEY
+              valueFrom:
+                secretKeyRef: { name: uh-runtime, key: UH_LLM_API_KEY }

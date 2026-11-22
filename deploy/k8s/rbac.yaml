@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: uh-scaler, namespace: uh-prod }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: uh-crewai-scaler, namespace: uh-prod }
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    resourceNames: ["uh-crewai"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["uh-crewai"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: uh-crewai-scaler, namespace: uh-prod }
+subjects:
+  - { kind: ServiceAccount, name: uh-scaler, namespace: uh-prod }
+roleRef: { kind: Role, name: uh-crewai-scaler, apiGroup: rbac.authorization.k8s.io }

@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: Service
+metadata: { name: uh-kernel, namespace: uh-prod }
+spec:
+  type: ClusterIP
+  selector: { app: uh-kernel, tier: kernel }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: uh-llama-index, namespace: uh-prod }
+spec:
+  type: ClusterIP
+  selector: { app: uh-llama-index, tier: capability }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: uh-langgraph, namespace: uh-prod }
+spec:
+  type: ClusterIP
+  selector: { app: uh-langgraph, tier: capability }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: uh-crewai, namespace: uh-prod }
+spec:
+  type: ClusterIP
+  selector: { app: uh-crewai, tier: capability }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: redis, namespace: uh-prod }
+spec:
+  clusterIP: None
+  selector: { app: uh-redis, tier: datastore }
+  ports: [{ name: redis, port: 6379, targetPort: redis }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: chroma, namespace: uh-prod }
+spec:
+  clusterIP: None
+  selector: { app: uh-chroma, tier: datastore }
+  ports: [{ name: http, port: 8000, targetPort: http }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, namespace: uh-prod }
+spec:
+  clusterIP: None
+  selector: { app: uh-postgres, tier: datastore }
+  ports: [{ name: postgres, port: 5432, targetPort: postgres }]

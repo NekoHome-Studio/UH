@@ -9,6 +9,7 @@ import { execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { verifyComposeExposure } from "./verify-compose-exposure.mjs";
+import { readK8sManifests, verifyK8sManifests } from "./verify-k8s-manifests.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEPS = path.join(ROOT, ".work", "verify-deps");
 const FULL = process.argv.includes("--full");
@@ -125,6 +126,12 @@ try {
   check("I Compose 暴露面与密钥引用", errors.length === 0, errors.join("; ") || "7 services, 1 published port");
 } catch {
   check("I Compose 暴露面与密钥引用", false, "无法读取 Compose YAML");
+}
+try {
+  const errors = verifyK8sManifests(readK8sManifests(yaml));
+  check("J K8s 工作负载、RBAC 与 NetworkPolicy", errors.length === 0, errors.join("; ") || "7 traffic allowances, scoped scaler RBAC");
+} catch {
+  check("J K8s 工作负载、RBAC 与 NetworkPolicy", false, "无法读取或校验 K8s YAML");
 }
 const failed = results.filter(r => !r.ok && !r.info);
 console.log(failed.length === 0 ? "VERIFY_ALL_PASSED (" + results.length + " checks" + (FULL ? ", full" : ", fast") + ")" : "VERIFY_FAILED=" + failed.length);
