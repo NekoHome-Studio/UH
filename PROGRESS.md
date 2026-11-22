@@ -264,8 +264,15 @@
 - 剩余条件 DSH 全修：**R-3** SDK 文档 3 处（network 顶层节点/SIGNATURE digest 字段/摘要内容长度 8 字节）；**R-2** tool 子进程剥离 7 凭据键（防越权夺 UH_AUTH_TOKEN）；**R-1** 静态扫描加固（别名归一/from-import/getattr/importlib/JS 入口）+ 6 绕过回归；Git fixture 3/3。
 - secret 扫描 check 9 误报复检报告探针 token → 脱敏。**212/212 双端 + verify-all full 8/8**。基线 b5e3421。
 
+### 2026-11-22 · MS-3 结项 ✅
+
+- 用户确认结项。六 Issue #22~#27 各附结项证据评论后关闭（state_reason=completed），MS-3 里程碑 closed（open=0 closed=6）。
+- tag **m2-v0.1.0** 已推 + Release 已发（https://github.com/NekoHome-Studio/UH/releases/tag/m2-v0.1.0）。
+- 结项基线 c791974：本机 265/265 + full 8/8 + secret rc=0，服务器 265/265，双端 21 文件哈希全 SAME。
+- 八轮验证累计修 DeepSeek F1-F13 + 19 绕过样本，test_review6_fixes 53 例。
+
 ## 下一步
 
-**MS-3 结项待用户确认**（用户暂缓）：DSH 审 6 任务卡 → GitHub 关闭 #22~#27 + tag m2-v0.1.0 → M3 生产期（#28 Compose 起）。
+**M3 生产期（#28~#36）**（用户暂缓）：DSH 审 6 任务卡 → GitHub 关闭 #22~#27 + tag m2-v0.1.0 → M3 生产期（#28 Compose 起）。
 M3 含登记项：SBX Linux/macOS 平台矩阵证据（无主机）、R-4~R-8 加固（审计自报覆盖/ProcessPluginLoader 收尾/no_verify 暴露面）、生产化收敛（dev 生产关/TLS+WS 短时票据/per-user principal/delta 合批/主题 REST OpenAPI 登记/web-search 真实代理）。
 交接见 [交接文档](docs/runbooks/交接文档.md) + [环境状态总览](docs/runbooks/环境状态总览.md)。

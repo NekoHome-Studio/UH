@@ -10,10 +10,10 @@
 
 ## 2. 当前状态（随进度更新）
 - MS-0 契约冻结：tag contract-v0.1.0，#1~#6 关闭；契约状态头已回写 frozen。
-- M0 骨架期完成（#7~#12）；M1 能力期完成（#13~#21，9/9）；M2 插件期功能完成（#22~#27）：插件驱动/最小沙箱/工具 SDK+3 官方工具/主题 CSS 契约/钩子+审计/插件 CLI。
-- 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0 / m1-review-fixed-v0.1.0 / m1-review2-fixed-v0.1.0（m2-v0.1.0 待 MS-3 结项）。
-- M1 一~五审 + M2 独立验收/复检（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；212 测试 + verify-all full 8/8（含 secret 扫描）；详见 docs/reviews/。
-- 当前：M2 复检条件闭合（P0 部署/生产闭环/重激活/沙箱审计/静态扫描加固/凭据剥离/SDK 文档），**MS-3 结项待用户确认** → 关闭 #22~#27 + tag m2-v0.1.0 → M3 生产期（#28 起，含 SBX Linux/macOS 补证）。
+- M0 骨架期完成（#7~#12）；M1 能力期完成（#13~#21，9/9）；M2 插件期**已结项**（#22~#27 关闭，MS-3 closed，tag m2-v0.1.0）：插件驱动/最小沙箱/工具 SDK+3 官方工具/主题 CSS 契约/钩子+审计/插件 CLI。
+- 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0 / m1-review-fixed-v0.1.0 / m1-review2-fixed-v0.1.0/ m2-v0.1.0。
+- M1 一~五审 + M2 独立验收/复检（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；265 测试 + verify-all full 8/8（含 secret 扫描）；详见 docs/reviews/。
+- 当前：**MS-3 已结项**（八轮独立验证，265 测试双端 full 8/8，修 DeepSeek F1-F13 + 19 绕过样本）→ 下一步 **M3 生产期（#28 Compose 起）**，含 SBX Linux/macOS 补证、AST 污点分析、SBX-04 Job 总量、TLS+WS 短时票据、per-user principal。
 - 实时进度以 PROGRESS.md 为准；任务编号映射见 uh-issues/issue-map.csv（#1~#39）。
 
 ## 3. 事实源与阅读顺序
