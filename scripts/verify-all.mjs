@@ -8,6 +8,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { verifyComposeExposure } from "./verify-compose-exposure.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEPS = path.join(ROOT, ".work", "verify-deps");
 const FULL = process.argv.includes("--full");
@@ -118,6 +119,12 @@ if (REMOTE) {
     const remote = execSync("git ls-remote origin refs/heads/main", { cwd: ROOT, env: { ...process.env, GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o ConnectTimeout=15" } }).toString().trim().split(/\s/)[0];
     check("H git 远端同步", local === remote, local.slice(0, 7) + " vs " + remote.slice(0, 7));
   } catch (e) { check("H git 远端同步", false, String(e.message).slice(0, 150)); }
+}
+try {
+  const errors = verifyComposeExposure(yaml.load(read("docker-compose.yaml")));
+  check("I Compose 暴露面与密钥引用", errors.length === 0, errors.join("; ") || "7 services, 1 published port");
+} catch {
+  check("I Compose 暴露面与密钥引用", false, "无法读取 Compose YAML");
 }
 const failed = results.filter(r => !r.ok && !r.info);
 console.log(failed.length === 0 ? "VERIFY_ALL_PASSED (" + results.length + " checks" + (FULL ? ", full" : ", fast") + ")" : "VERIFY_FAILED=" + failed.length);

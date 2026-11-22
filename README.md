@@ -14,6 +14,7 @@
 | [docs/source/](docs/source/) | 上游架构文档基线（v0.1.0 与 v3 整合版 docx） |
 | [uh-issues/](uh-issues/) | 39 个 Issue 交付包：正文、labels/milestones/批量创建脚本、CSV |
 | [PROGRESS.md](PROGRESS.md) | 执行进度日志（随任务推进更新） |
+| [Docker Compose 部署](docs/deployment/docker-compose.md) | 服务启动、密钥注入、端口核对和签名插件安装 |
 
 ## 契约状态（已冻结 · 2026-11-15 评审通过 · tag contract-v0.1.0）
 

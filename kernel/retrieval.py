@@ -19,6 +19,7 @@ import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 CAP_NO_RESULTS = "UH-CAP-3001"
@@ -142,10 +143,22 @@ class ChromaVectorStore(LocalVectorStore):
         # 三审 N1：先 super().__init__ 确保 _guard/_module/_namespace 始终存在（防 AttributeError），再 chroma 初始化。
         super().__init__(path=path, embedding=embedding, guard=guard, module=module, namespace=namespace)
         self._chroma = None
+        target = str(path or os.environ.get("UH_RETRIEVAL_CHROMA", ".uh/chroma"))
+        if target.startswith(("http://", "https://")):
+            import chromadb  # type: ignore
+
+            url = urlsplit(target)
+            use_tls = url.scheme == "https"
+            self._chroma = chromadb.HttpClient(
+                host=url.hostname, port=url.port or (443 if use_tls else 80), ssl=use_tls,
+            )
+            self._collection = self._chroma.get_or_create_collection("uh_retrieval", embedding_function=None)
+            self.documents = []
+            return
         try:
             import chromadb  # type: ignore
 
-            self._chroma = chromadb.PersistentClient(path=str(path or os.environ.get("UH_RETRIEVAL_CHROMA", ".uh/chroma")))
+            self._chroma = chromadb.PersistentClient(path=target)
             self._collection = self._chroma.get_or_create_collection("uh_retrieval")
             self.documents = []
         except Exception:

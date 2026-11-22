@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 // Match an assignment to the actual token variable. The word boundary keeps
 // UH_AUTH_TOKEN_FILE references out of the result while allowing spaces,
@@ -16,10 +17,9 @@ export function hasPlainAuthToken(text) {
   return [...String(text).matchAll(AUTH_TOKEN_PATTERN)].some((match) => !isSyntheticToken(match[1]));
 }
 
-export function trackedTextFiles(root) {
-  const output = execFileSync("git", ["ls-files", "-z"], { cwd: root }).toString("utf8");
-  return output
-    .split("\0")
+function textFiles(root, gitFlags) {
+  const output = execFileSync("git", ["ls-files", "-z", ...gitFlags], { cwd: root }).toString("utf8");
+  return [...new Set(output.split("\0"))]
     .filter(Boolean)
     .map((relative) => path.join(root, relative))
     .filter((file) => {
@@ -32,9 +32,13 @@ export function trackedTextFiles(root) {
     });
 }
 
-export function scanTrackedFiles(root) {
+export function trackedTextFiles(root) {
+  return textFiles(root, ["--cached"]);
+}
+
+function scanFiles(root, files) {
   const hits = [];
-  for (const file of trackedTextFiles(root)) {
+  for (const file of files) {
     let text;
     try {
       text = fs.readFileSync(file, "utf8");
@@ -44,5 +48,21 @@ export function scanTrackedFiles(root) {
     if (hasPlainAuthToken(text)) hits.push(path.relative(root, file));
   }
   return hits;
+}
+
+export function scanTrackedFiles(root) {
+  return scanFiles(root, trackedTextFiles(root));
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const files = textFiles(root, ["--cached", "--others", "--exclude-standard"]);
+  const hits = scanFiles(root, files);
+  if (hits.length) {
+    for (const file of hits) console.error(`FAIL  明文鉴权 token: ${file}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`SECRET_SCAN_PASSED (${files.length} text files, 0 hits)`);
+  }
 }
 

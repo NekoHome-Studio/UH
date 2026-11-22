@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!pyproject.toml
+!kernel/*.py
+!ui/*.html
+!ui/*.js
+!docs/contracts/events.schema.json
+!docs/contracts/manifest.schema.json
+!docs/contracts/manifest/*.schema.json

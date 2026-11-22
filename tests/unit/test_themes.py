@@ -1,10 +1,13 @@
 import base64
 import json
+import secrets
 import shutil
 import struct
 import subprocess
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 from zlib import compress, crc32
 
 import pytest
@@ -12,6 +15,7 @@ import yaml
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
+from kernel.cli import main as uh_cli
 from kernel.main import create_app
 from kernel.plugins import PluginDriver, PluginSecurityConfig, PluginValidationError, _canonical_digest
 
@@ -124,6 +128,45 @@ def test_theme_selection_and_assets_survive_restart(monkeypatch, tmp_path):
         assert client.put(selection, json={"name": "theme-light"}).status_code == 200
         assert client.delete("/api/v1/plugins/theme-light").status_code == 200
         assert client.get("/api/v1/themes").json()["data"] == {"active": None, "themes": []}
+
+
+def test_container_cli_hot_installs_signed_theme(monkeypatch, tmp_path, capsys):
+    key = Ed25519PrivateKey.generate()
+    trust_file = tmp_path / "trusted.json"
+    trust_file.write_text(json.dumps({"theme-test": base64.b64encode(key.public_key().public_bytes_raw()).decode()}), encoding="utf-8")
+    token_file = tmp_path / "bearer"
+    token_file.write_text(secrets.token_urlsafe(), encoding="utf-8")
+    monkeypatch.delenv("UH_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("UH_WS_TOKEN", raising=False)
+    monkeypatch.delenv("UH_WS_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("UH_LOCAL_MODE", "0")
+    monkeypatch.setenv("UH_AUTH_REQUIRED", "1")
+    monkeypatch.setenv("UH_AUTH_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("UH_PLUGIN_INSTALL_VIA_KERNEL", "1")
+    monkeypatch.setenv("UH_PLUGIN_ROOT", str(tmp_path / "plugins"))
+    monkeypatch.setenv("UH_PLUGIN_REGISTRY", str(tmp_path / "plugins.json"))
+    monkeypatch.setenv("UH_PLUGIN_TRUSTED_KEYS_FILE", str(trust_file))
+    package = _package(tmp_path / "theme.uhpkg", signing_key=key)
+    app = create_app()
+    with TestClient(app) as client:
+        assert client.post("/api/v1/plugins", json={"source": str(package)}).status_code == 401
+
+        connection = Mock()
+
+        def send(method, path, *, body, headers):
+            response = client.request(method, path, content=body, headers=headers)
+            connection.getresponse.return_value = SimpleNamespace(status=response.status_code, read=lambda: response.content)
+
+        connection.request.side_effect = send
+        factory = Mock(return_value=connection)
+        monkeypatch.setattr("kernel.cli.http.client.HTTPConnection", factory)
+        assert uh_cli(["plugin", "install", str(package)]) == 0
+        factory.assert_called_once_with("127.0.0.1", 8080, timeout=120)
+        assert json.loads(capsys.readouterr().out)["status"] == "active"
+        assert app.state.plugin_driver.get("theme-light")["status"] == "active"
+    assert (tmp_path / "plugins/theme-light/0.1.0/manifest.yaml").is_file()
+    with TestClient(create_app()) as client:
+        assert client.app.state.plugin_driver.get("theme-light")["status"] == "active"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js required for the theme UI unit test")

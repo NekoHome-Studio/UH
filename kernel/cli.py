@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 import json
 import os
 import signal
@@ -279,6 +280,34 @@ def plugin_validate(args) -> int:
     return 0
 
 
+def _install_via_kernel(source: str, *, no_verify: bool) -> dict:
+    try:
+        token = Path(os.environ["UH_AUTH_TOKEN_FILE"]).read_text(encoding="utf-8").strip()
+        if not token:
+            raise ValueError("empty token file")
+    except (KeyError, OSError, ValueError) as exc:
+        raise PluginError("UH-USR-1001", "无法读取内核鉴权文件") from exc
+    if not source.startswith(("market://", "git+https://")):
+        source = str(Path(source).resolve())
+    body = json.dumps({"source": source, "no_verify": no_verify})
+    connection = http.client.HTTPConnection("127.0.0.1", 8080, timeout=120)
+    try:
+        connection.request("POST", "/api/v1/plugins", body=body, headers={
+            "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+        })
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        raise PluginError("UH-KRN-5001", "无法完成内核插件安装请求") from exc
+    finally:
+        connection.close()
+    if response.status == 201:
+        return payload["data"]
+    error = payload.get("error") or {}
+    raise PluginError(error.get("code", "UH-KRN-5001"), error.get("message", "内核插件安装失败"),
+                      status_code=response.status, detail=error.get("detail"), retryable=error.get("retryable", False))
+
+
 def plugin_install(args) -> int:
     async def install():
         driver = _plugin_driver()
@@ -288,7 +317,10 @@ def plugin_install(args) -> int:
             await driver.shutdown()
 
     try:
-        result = asyncio.run(install())
+        if os.environ.get("UH_PLUGIN_INSTALL_VIA_KERNEL") == "1":
+            result = _install_via_kernel(args.source, no_verify=args.no_verify)
+        else:
+            result = asyncio.run(install())
     except PluginError as exc:
         print(json.dumps(exc.to_dict(), ensure_ascii=False), file=sys.stderr)
         return 1

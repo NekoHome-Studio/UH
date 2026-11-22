@@ -144,6 +144,41 @@ class SQLiteCheckpointStore:
         return Checkpoint(**json.loads(row[0])) if row else None
 
 
+class PostgresCheckpointStore:
+    """Checkpoint backend selected explicitly for production PostgreSQL."""
+
+    def __init__(self, dsn: str) -> None:
+        import psycopg  # type: ignore
+
+        self._dsn = dsn
+        self._connect = psycopg.connect
+        with self._connect(self._dsn, connect_timeout=5) as db:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    checkpoint_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL, payload TEXT NOT NULL
+                )
+            """)
+            db.execute("CREATE INDEX IF NOT EXISTS checkpoints_task_updated ON checkpoints (task_id, updated_at DESC)")
+
+    def save(self, checkpoint: Checkpoint) -> None:
+        with self._connect(self._dsn, connect_timeout=5) as db:
+            db.execute("""
+                INSERT INTO checkpoints(checkpoint_id, task_id, updated_at, payload)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (checkpoint_id) DO UPDATE
+                SET task_id = EXCLUDED.task_id, updated_at = EXCLUDED.updated_at, payload = EXCLUDED.payload
+            """, (checkpoint.checkpoint_id, checkpoint.task_id, checkpoint.updated_at, json.dumps(checkpoint.to_dict(), ensure_ascii=False)))
+
+    def load(self, task_id: str, checkpoint_id: str | None = None) -> Checkpoint | None:
+        with self._connect(self._dsn, connect_timeout=5) as db:
+            if checkpoint_id:
+                row = db.execute("SELECT payload FROM checkpoints WHERE checkpoint_id=%s AND task_id=%s", (checkpoint_id, task_id)).fetchone()
+            else:
+                row = db.execute("SELECT payload FROM checkpoints WHERE task_id=%s ORDER BY updated_at DESC LIMIT 1", (task_id,)).fetchone()
+        return Checkpoint(**json.loads(row[0])) if row else None
+
+
 Node = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
 Emit = Callable[[str, dict[str, Any]], Awaitable[int | None] | int | None]
 
@@ -179,14 +214,18 @@ class OrchestrationService:
 
     @staticmethod
     def _store_from_env() -> CheckpointStore:
-        # PostgreSQL 是目标部署后端；没有 psycopg/数据库时安全回退本地 SQLite。
+        backend = os.environ.get("UH_CHECKPOINT_BACKEND", "sqlite").lower()
         postgres_url = os.environ.get("UH_CHECKPOINT_POSTGRES_URL")
+        if backend == "postgres":
+            if not postgres_url:
+                raise RuntimeError("PostgreSQL checkpoint 需要 UH_CHECKPOINT_POSTGRES_URL")
+            return PostgresCheckpointStore(postgres_url)
         if postgres_url:
             import logging
-            logging.getLogger("kernel.orchestration").warning("UH_CHECKPOINT_POSTGRES_URL 已配置但 PG 后端未实装，回退 SQLite（二审 N13）")
+            logging.getLogger("kernel.orchestration").warning("UH_CHECKPOINT_POSTGRES_URL 已配置，设置 UH_CHECKPOINT_BACKEND=postgres 可启用")
             path = os.environ.get("UH_CHECKPOINT_SQLITE_PATH", ".uh/checkpoints.sqlite3")
             return SQLiteCheckpointStore(path)
-        if os.environ.get("UH_CHECKPOINT_BACKEND", "sqlite").lower() == "json":
+        if backend == "json":
             return JSONCheckpointStore(os.environ.get("UH_CHECKPOINT_JSON_PATH", ".uh/checkpoints.json"))
         return SQLiteCheckpointStore(os.environ.get("UH_CHECKPOINT_SQLITE_PATH", ".uh/checkpoints.sqlite3"))
 
