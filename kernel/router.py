@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from . import otel
+
 TASK_TYPES = ("chat", "search", "workflow", "collaborate", "tool")
 
 # 规则按特异性排序；命中多类时取优先级最高者
@@ -30,6 +32,13 @@ class RouteDecision:
 
 
 def classify(content: str, mode: str = "auto") -> RouteDecision:
+    if otel.active():
+        with otel.span("router.decide"):
+            return _classify(content, mode)
+    return _classify(content, mode)
+
+
+def _classify(content: str, mode: str) -> RouteDecision:
     if mode != "auto":
         if mode not in TASK_TYPES:
             raise ValueError(f"invalid mode: {mode}")

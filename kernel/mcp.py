@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
+from . import otel
 from .protocol import CapabilityRegistry, Envelope, EventBus, module_error_code
 
 MAX_RESPONSE_BYTES = 262144
@@ -278,7 +279,8 @@ class StreamableHTTPTransport:
 
     async def request(self, method: str, params: dict[str, Any], request_id: int) -> dict[str, Any]:
         await self.connect()
-        response = await self._client.post(self.url, json={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+        response = await self._post(message)
         response.raise_for_status()
         return response.json()
 
@@ -287,7 +289,12 @@ class StreamableHTTPTransport:
         message = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             message["params"] = params
-        await self._client.post(self.url, json=message)
+        await self._post(message)
+
+    async def _post(self, message: dict[str, Any]):
+        if otel.active():
+            return await self._client.post(self.url, json=message, headers=otel.outbound_headers())
+        return await self._client.post(self.url, json=message)
 
     async def cancel(self, request_id: int, reason: str) -> None:
         await self.notify("notifications/cancelled", {"requestId": request_id, "reason": reason})
@@ -538,6 +545,7 @@ class MCPHost:
     def tool_timeout_ms(self, name: str) -> int:
         return self._tool_policy(name, None, None, None)[2]
 
+    @otel.instrument_async("mcp.call", kind="CLIENT")
     async def call_tool(
         self,
         name: str,
@@ -566,7 +574,7 @@ class MCPHost:
                 "call_id": call_id, "tool_name": name, "args_summary": self._args_summary(arguments),
                 "risk_level": risk, "requires_confirmation": risk in {"write-host", "irreversible"},
                 "task_id": task_id,
-            }, trace_id=trace_id, from_="mcp_host")
+            }, trace_id=trace_id, from_="mcp_host", span_id=otel.envelope_ids()[0] if otel.active() else "")
         # M1-8 确认门 + 二审 N3 修复：高危工具 fail-closed——无确认通道一律拒绝（RPC 路径不可绕过）。
         if risk in {"write-host", "irreversible"}:
             if confirm is None:

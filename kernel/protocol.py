@@ -17,8 +17,15 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from . import otel, tracing
+
 # ADR-002：内部事件三段「域.对象.动作」
 EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
+_CAPABILITY_SPANS = {
+    "retrieval.search": "capability.retrieve",
+    "llm.generate": "capability.generate",
+    "orchestration.run": "capability.orchestrate",
+}
 
 
 def validate_event_name(name: str) -> None:
@@ -66,6 +73,11 @@ class EventBus:
     async def publish(self, name: str, payload: dict, trace_id: str = "", span_id: str = "", from_: str = "kernel", parent_span_id: str | None = None) -> Envelope:
         validate_event_name(name)
         self._seq += 1
+        if otel.active() and (not trace_id or trace_id == tracing.get_trace_id()):
+            trace_id = trace_id or tracing.get_trace_id()
+            if parent_span_id is None:
+                active_span_id, active_parent_id = otel.envelope_ids()
+                parent_span_id = active_parent_id if span_id == active_span_id else active_span_id
         env = Envelope(action=name, payload=payload, trace_id=trace_id, span_id=span_id or ("sp_" + secrets.token_hex(4)), from_=from_, to="bus", parent_span_id=parent_span_id, event_id=self._seq)  # 四审：自动生成 span 供溯源
         for pattern, handler in tuple(self._subs):
             if fnmatch.fnmatchcase(name, pattern):
@@ -152,14 +164,31 @@ class CapabilityRegistry:
 
     async def call(self, action: str, payload: dict, trace_id: str = "", deadline_ms: int = 8000, from_: str = "kernel") -> Envelope:
         req = Envelope(action=action, payload=payload, trace_id=trace_id, from_=from_, to=action, deadline_ms=deadline_ms)
+        if otel.active() and (not trace_id or trace_id == tracing.get_trace_id()):
+            name = _CAPABILITY_SPANS.get(action, "capability.call")
+            with otel.span(name):
+                req.trace_id = tracing.get_trace_id()
+                req.span_id, req.parent_span_id = otel.envelope_ids()
+                result = await self._observed_call(req)
+                if result.payload.get("degraded"):
+                    otel.mark_error()
+                if not result.trace_id:
+                    result.trace_id = req.trace_id
+                if not result.span_id or result.span_id == req.span_id:
+                    result.span_id = req.span_id
+                    result.parent_span_id = req.parent_span_id
+                return result
+        return await self._observed_call(req)
+
+    async def _observed_call(self, req: Envelope) -> Envelope:
         try:
             result = await self._call(req)
         except Exception:
             if self._observe_call is not None:
-                self._observe_call(action, True)
+                self._observe_call(req.action, True)
             raise
         if self._observe_call is not None:
-            self._observe_call(action, bool(result.payload.get("degraded")))
+            self._observe_call(req.action, bool(result.payload.get("degraded")))
         return result
 
     async def _call(self, req: Envelope) -> Envelope:

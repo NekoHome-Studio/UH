@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
-from . import tracing
+from . import otel, tracing
 from .llm import LLMError
 from .orchestration import OrchestrationError
 from .router import RouteDecision, classify
@@ -90,7 +90,7 @@ class TaskManager:
         except ValueError:
             decision = classify(content, "auto")
         task_id = "uh_task_" + secrets.token_hex(16)
-        trace_id = tracing.new_trace_id()
+        trace_id = tracing.get_trace_id() if otel.active() else tracing.new_trace_id()
         event_buffer: list[dict[str, Any]] = []
         self.tasks[task_id] = {
             "task_id": task_id,
@@ -110,7 +110,7 @@ class TaskManager:
             "owner_client_id": owner_client_id or session_id,
             "owner_token": owner_token,
         }
-        self.tasks[task_id]["_runner"] = asyncio.create_task(self._run(task_id, session_id, content, decision, dict(context or {})))
+        self._start_runner(self.tasks[task_id], self._run(task_id, session_id, content, decision, dict(context or {})))
         return task_id, trace_id
 
     def create_tool_task(
@@ -126,7 +126,7 @@ class TaskManager:
     ) -> tuple[str, str]:
         """M1-8：高危工具任务，执行前经人工确认门。"""
         task_id = "uh_task_" + secrets.token_hex(16)
-        trace_id = tracing.new_trace_id()
+        trace_id = tracing.get_trace_id() if otel.active() else tracing.new_trace_id()
         event_buffer: list[dict[str, Any]] = []
         self.tasks[task_id] = {
             "task_id": task_id, "queue": asyncio.Queue(), "subscribers": set(),
@@ -134,13 +134,22 @@ class TaskManager:
             "session_id": session_id, "trace_id": trace_id, "seq": 0, "mode": "tool",
             "context": {}, "owner_client_id": owner_client_id or session_id, "owner_token": owner_token,
         }
-        self.tasks[task_id]["_runner"] = asyncio.create_task(self._run_tool(task_id, session_id, tool_name, arguments, risk_level, host))
+        self._start_runner(self.tasks[task_id], self._run_tool(task_id, session_id, tool_name, arguments, risk_level, host))
         return task_id, trace_id
+
+    def _start_runner(self, task: dict, coro) -> None:
+        if otel.active():
+            if task["trace_id"] == tracing.get_trace_id():
+                task["_trace_headers"] = otel.outbound_headers()
+            runner = otel.start_task(coro, task["trace_id"], carrier=task.get("_trace_headers"))
+        else:
+            runner = asyncio.create_task(coro)
+        task["_runner"] = runner
 
     async def _run_tool(self, task_id: str, session_id: str, tool_name: str, arguments: dict[str, Any], risk_level: str, host: Any) -> None:
         t = self.tasks[task_id]
         q: asyncio.Queue = t["queue"]
-        with tracing.request_context(t["trace_id"]):
+        with tracing.request_context(t["trace_id"], span_id=tracing.get_span_id() if otel.active() else None):
             await self._emit(t, "task.created", {"session_id": session_id, "mode": "tool"})
 
             async def confirm_cb(name: str, risk: str, summary: str, call_id: str) -> str:
@@ -236,6 +245,10 @@ class TaskManager:
         when no SSE or WebSocket consumer was connected while it ran.
         """
         task_id = task["task_id"]
+        if event == "task.failed" and otel.active():
+            # The HTTP span may already have ended when a 202 task fails.
+            with otel.span("task.failed"):
+                otel.mark_error()
         source = Envelope(
             action=self._source_action(event),
             payload=payload,
@@ -284,7 +297,7 @@ class TaskManager:
     async def _run(self, task_id: str, session_id: str, content: str, decision: RouteDecision, context: dict[str, Any] | None = None) -> None:
         t = self.tasks[task_id]
         q: asyncio.Queue = t["queue"]
-        with tracing.request_context(t["trace_id"]):
+        with tracing.request_context(t["trace_id"], span_id=tracing.get_span_id() if otel.active() else None):
             context = context or {}
             memory_recall = bool(context.get("memory_recall", True))
             retrieval_context = ""
@@ -402,7 +415,7 @@ class TaskManager:
         task["queue"] = asyncio.Queue()
         task["status"] = "running"
         skipped_steps = len(checkpoint.completed_nodes)
-        task["_runner"] = asyncio.create_task(self._resume_workflow(task, checkpoint.checkpoint_id, skipped_steps, checkpoint.last_event_id, checkpoint.state.get("content", "")))  # 三审 P1-4：写回 runner 供 cancel
+        self._start_runner(task, self._resume_workflow(task, checkpoint.checkpoint_id, skipped_steps, checkpoint.last_event_id, checkpoint.state.get("content", "")))
         return {"task_id": task_id, "resumed_from_event_id": checkpoint.last_event_id, "checkpoint_id": checkpoint.checkpoint_id}
 
     async def _resume_workflow(self, task: dict[str, Any], checkpoint_id: str, skipped_steps: int, resumed_from_event_id: int, content: str) -> None:
@@ -565,11 +578,17 @@ class TaskManager:
         if method is None:
             return
         try:
-            result = method(content, session_id=session_id, metadata={"role": role}, memory_recall=True)
-            if inspect.isawaitable(result):
-                result = await result
-            if result is not None and self.bus is not None:
-                await self.bus.publish("memory.record.write", {"session_id": session_id, "role": role}, trace_id=tracing.get_trace_id() or "")
+            await self._write_memory(method, content, session_id, role)
         except Exception:
             # 长期记忆是增强能力；缺少密钥或后端异常不能阻断当前会话。
             return
+
+    @otel.instrument_async("memory.write")
+    async def _write_memory(self, method, content: str, session_id: str, role: str) -> None:
+        result = method(content, session_id=session_id, metadata={"role": role}, memory_recall=True)
+        if inspect.isawaitable(result):
+            result = await result
+        if result is not None and self.bus is not None:
+            span_id = otel.envelope_ids()[0] if otel.active() else ""
+            await self.bus.publish("memory.record.write", {"session_id": session_id, "role": role},
+                                   trace_id=tracing.get_trace_id() or "", span_id=span_id)

@@ -1,0 +1,39 @@
+# OpenTelemetry Collector Contrib configuration for distributed tail sampling.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  tail_sampling:
+    # Allows for the five-minute tool confirmation window and task execution.
+    decision_wait: 8m
+    num_traces: 10000
+    decision_cache:
+      sampled_cache_size: 10000
+      non_sampled_cache_size: 10000
+    policies:
+      - name: uh-errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: uh-parentbased-traceidratio
+        type: string_attribute
+        string_attribute:
+          key: uh.sample_candidate
+          values: ["true"]
+  batch: {}
+
+exporters:
+  otlp_http:
+    endpoint: ${env:UH_TRACE_BACKEND_OTLP_HTTP_ENDPOINT}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [tail_sampling, batch]
+      exporters: [otlp_http]

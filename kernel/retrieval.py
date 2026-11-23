@@ -16,6 +16,7 @@ import math
 import os
 import re
 import sys
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
@@ -329,6 +330,40 @@ class RetrievalMCPServer:
             except Exception as exc:
                 sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": str(exc)}}, ensure_ascii=False) + "\n")
                 sys.stdout.flush()
+
+
+def create_mcp_app():
+    """Serve the existing retrieval JSON-RPC handler over private HTTP."""
+    from fastapi import FastAPI, Response
+    from starlette.concurrency import run_in_threadpool
+
+    from . import otel
+
+    server = RetrievalMCPServer()
+    runtime = otel.configure("uh-retrieval")
+
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            if runtime is not None:
+                await runtime.shutdown()
+
+    app = FastAPI(title="UH! Retrieval MCP", lifespan=lifespan)
+    if runtime is not None:
+        app.add_middleware(otel.TracingMiddleware, runtime=runtime, routes=app.routes, name="mcp.receive")
+
+    @app.post("/mcp")
+    async def handle_rpc(message: dict):
+        result = await run_in_threadpool(server.handle, message)
+        if result is None:
+            return Response(status_code=202)
+        if ("error" in result or result.get("result", {}).get("isError")) and otel.active():
+            otel.mark_error()
+        return result
+
+    return app
 
 
 if __name__ == "__main__":

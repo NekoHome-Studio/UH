@@ -1,0 +1,22 @@
+# Optional Compose overlay for docker-compose.yaml at the repository root.
+services:
+  uh-kernel:
+    build:
+      args:
+        UH_INSTALL_EXTRAS: compose,otel
+    depends_on:
+      jaeger:
+        condition: service_started
+    environment:
+      UH_OTEL_ENABLED: "${UH_OTEL_ENABLED:-1}"
+      UH_OTEL_SAMPLE_RATIO: "${UH_OTEL_SAMPLE_RATIO:-1.0}"
+      UH_OTEL_TAIL_SAMPLING: "${UH_OTEL_TAIL_SAMPLING:-local}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}"
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.23.0
+    command:
+      - --set=receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317
+      - --set=receivers.otlp.protocols.http.endpoint=0.0.0.0:4318
+    ports: ["127.0.0.1:16686:16686"]

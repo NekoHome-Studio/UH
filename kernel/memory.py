@@ -12,6 +12,7 @@ import os
 import time
 from typing import Any
 
+from . import otel
 from .logging import get_logger, log_event
 
 log = get_logger("kernel.memory")
@@ -27,6 +28,7 @@ class ShortTermMemory:
     def _key(self, session_id: str) -> str:
         return self.prefix + session_id
 
+    @otel.instrument_async("memory.write")
     async def append(self, session_id: str, role: str, content: str) -> None:
         key = self._key(session_id)
         msg = json.dumps({"role": role, "content": content, "ts": round(time.time(), 3)}, ensure_ascii=False)

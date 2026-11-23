@@ -21,7 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from . import __version__, tracing
+from . import __version__, otel, tracing
 from .logging import get_logger, log_event, setup_logging
 from .router import classify
 from .memory import create_short_term_memory
@@ -223,6 +223,7 @@ def _bearer_token(value: str | None) -> str | None:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="UH! Kernel", version=__version__)
+    trace_runtime = otel.configure()
     app.state.scaler = CrewAIScaler()
     app.state.idempotency_cache = {}
     app.state.sessions = set()  # 三审 P1-6：会话注册表（存在性校验）
@@ -363,9 +364,13 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def stop_capabilities() -> None:
-        await app.state.plugin_driver.shutdown()
-        await app.state.hooks.shutdown()
-        await app.state.retrieval_host.close()
+        try:
+            await app.state.plugin_driver.shutdown()
+            await app.state.hooks.shutdown()
+            await app.state.retrieval_host.close()
+        finally:
+            if trace_runtime is not None:
+                await trace_runtime.shutdown()
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
@@ -394,8 +399,13 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def trace_middleware(request: Request, call_next):
-        trace_id = request.headers.get("x-trace-id") or tracing.new_trace_id()
-        with tracing.request_context(trace_id):
+        if trace_runtime is None:
+            trace_id = request.headers.get("x-trace-id") or tracing.new_trace_id()
+            scope = tracing.request_context(trace_id)
+        else:
+            trace_id = tracing.get_trace_id()
+            scope = tracing.request_context(trace_id, span_id=tracing.get_span_id())
+        with scope:
             log_event(log, logging.INFO, "request.received", method=request.method, path=request.url.path)
             start = time.perf_counter()
             # REST bearerAuth（审查 B5，对齐 openapi bearerAuth）：本地单用户模式（UH_LOCAL_MODE 默认 1）豁免；
@@ -519,6 +529,9 @@ def create_app() -> FastAPI:
             finally:
                 if _idem_lock is not None:
                     _idem_lock.release()
+
+    if trace_runtime is not None:
+        app.add_middleware(otel.TracingMiddleware, runtime=trace_runtime, routes=app.routes)
 
     # Wrap the tracing middleware as it can respond before routing.
     app.add_middleware(MetricsMiddleware, metrics=telemetry, routes=app.routes)

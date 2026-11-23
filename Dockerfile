@@ -2,7 +2,8 @@ FROM python:3.12-slim-bookworm AS build
 WORKDIR /src
 COPY pyproject.toml ./
 COPY kernel/ ./kernel/
-RUN python -m pip install --no-cache-dir --prefix=/install '.[compose]'
+ARG UH_INSTALL_EXTRAS=compose
+RUN python -m pip install --no-cache-dir --prefix=/install ".[${UH_INSTALL_EXTRAS}]"
 
 FROM python:3.12-slim-bookworm AS runtime
 RUN apt-get update \
