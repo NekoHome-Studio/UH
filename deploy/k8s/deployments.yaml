@@ -147,16 +147,22 @@ spec:
       labels: { app: uh-crewai, tier: capability }
     spec:
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
       containers:
         - name: crewai
           image: ultra-harness/crewai:0.1.0
+          imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /ready, port: http }
+            initialDelaySeconds: 0
+            periodSeconds: 2
+            timeoutSeconds: 1
           livenessProbe:
             httpGet: { path: /health, port: http }
+            initialDelaySeconds: 15
           resources:
-            requests: { cpu: 200m, memory: 256Mi }
+            requests: { cpu: 250m, memory: 256Mi }
             limits: { cpu: "1", memory: 1Gi }
           env:
             - { name: UH_LLM_PROVIDER, value: mock }

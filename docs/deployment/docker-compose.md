@@ -1,6 +1,6 @@
 # Docker Compose 部署
 
-使用 Docker Compose v2 和 Linux 容器。内核镜像由本仓库的 `Dockerfile` 构建。`ultra-harness/llama-index:0.1.0`、`ultra-harness/langgraph:0.1.0` 和启用协作时的 `ultra-harness/crewai:0.1.0` 需由部署方预先提供为本地镜像，或从已配置的镜像仓库获取。
+使用 Docker Compose v2 和 Linux 容器。内核镜像由本仓库的 `Dockerfile` 构建。部署方需提供 `ultra-harness/llama-index:0.1.0` 和 `ultra-harness/langgraph:0.1.0`。CrewAI 的构建和启停命令见 [协作部署](collaboration.md#compose)。
 
 ## 注入配置与密钥
 
@@ -19,7 +19,7 @@ docker compose ps
 docker compose port uh-kernel 8080
 ```
 
-默认启动六个服务，宿主机仅发布内核 TCP `8080`。核对 `docker compose ps` 的 `PORTS` 列时，只有 `uh-kernel` 应显示 `8080` 的宿主机映射。`GET /health` 供 Docker 健康检查使用。需要协作能力时执行 `docker compose --profile collaborate up -d`。
+默认启动六个服务，宿主机仅发布内核 TCP `8080`。核对 `docker compose ps` 的 `PORTS` 列时，只有 `uh-kernel` 应显示 `8080` 的宿主机映射。内核的 `GET /health` 供 Docker 健康检查使用。需要协作能力时执行 `docker compose --profile collaborate up -d uh-crewai`。
 
 ## 安装签名插件
 

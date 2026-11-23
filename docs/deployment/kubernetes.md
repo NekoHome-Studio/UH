@@ -1,6 +1,6 @@
 # Kubernetes 部署与验收
 
-使用支持 NetworkPolicy 的 CNI、提供 `metrics.k8s.io` 的指标服务，以及 Linux 节点。用本仓库的 Dockerfile 构建并发布内核镜像。部署方需提供与 Compose 同名的三个能力镜像，监听 TCP 8080 并实现 `/health` 和 `/ready`。Ingress 控制器运行在 `ingress-controller` 命名空间，后端指向 `uh-prod/uh-kernel:8080`。DNS 策略选择 `kube-system` 中标签为 `k8s-app=kube-dns` 的 Pod。
+使用支持 NetworkPolicy 的 CNI、提供 `metrics.k8s.io` 的指标服务，以及 Linux 节点。用本仓库的 Dockerfile 构建并发布内核镜像。能力镜像与 Compose 同名，监听 TCP 8080 并实现 `/health` 和 `/ready`。CrewAI 的镜像构建见 [协作部署](collaboration.md#kubernetes)。Ingress 控制器运行在 `ingress-controller` 命名空间，后端指向 `uh-prod/uh-kernel:8080`。DNS 策略选择 `kube-system` 中标签为 `k8s-app=kube-dns` 的 Pod。
 
 Redis、Chroma、PostgreSQL 各有一个 StatefulSet 和独立 PVC。PVC 使用集群默认 StorageClass。如需指定，请在首次部署前为相应的 `spec.volumeClaimTemplates[].spec.storageClassName` 设置集群中的存储类名称。内核 Pod 的本地会话、任务和插件状态各自独立。
 
@@ -44,7 +44,7 @@ kubectl get deployments,hpa,statefulsets,pvc,networkpolicy -n uh-prod
 - LlamaIndex 与 LangGraph 的 HPA 下限为 2、上限为 5，CPU 目标为 70%。待两个副本就绪后，在验收环境模拟其中一个副本崩溃，检查内核 `/health` 和 `/ready`、另一副本及其他能力服务。独立能力镜像应在不就绪时让 `/ready` 返回非成功 HTTP 状态。
 - 对 LlamaIndex 或 LangGraph 施压，检查 `kubectl get hpa -n uh-prod -w` 的 CPU 和副本变化。CrewAI 从 0 启动，由 scaler 设置 1 或 0，HPA 上下限为 1。CPU HPA 在目标为 0 时暂停。部署文件包含 CrewAI 的初始副本数，重新应用该文件会把目标设回 0。 [Kubernetes HPA](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)
 - 从无标签验收 Pod 对能力模块发 HTTP 请求，预期超时。用内核 Pod 确认能力端口和三个存储端口可达，另核对 DNS、Ingress 与配置后的 LLM TLS 端点。LangGraph 只获得 Redis 和 PostgreSQL 的存储通路，LlamaIndex 只获得 Chroma 的存储通路。
-- 在内核的异步调用链执行 `await app.state.scaler.scale("uh-crewai", 1)`，确认返回 `ok` 且记录 `audit.scaler.result`。再调用副本数 0，确认收回。API 请求与就绪确认共用 30 秒上限，超时后停止等待，已经被 API 接受的请求可能仍会生效。按任务路由自动唤醒和任务完成回收属于 M3-5。
+- 从消息入口提交 `mode=collaborate` 任务，确认 `audit.scaler.result` 中出现同一 trace 下的扩容与回收记录。通过 Deployment 的 `status.readyReplicas` 确认 30 秒内就绪，任务结束后观察副本数回到 0。缓存未命中时的超时降级和验收预算见 [协作部署](collaboration.md#冷启动预算)。
 
 ## RBAC 审计
 

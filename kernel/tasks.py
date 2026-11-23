@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 from . import otel, tracing
+from .collaboration import COLLABORATION_DEADLINE_MS
 from .llm import LLMError
 from .orchestration import OrchestrationError
 from .router import RouteDecision, classify
@@ -302,6 +303,7 @@ class TaskManager:
             memory_recall = bool(context.get("memory_recall", True))
             retrieval_context = ""
             long_term_context = ""
+            answer = None
             try:
                 await self._emit(t, "task.created", {"session_id": session_id, "mode": decision.task_type}, audit_fields={
                     "task_type": decision.task_type, "rule": decision.rule,
@@ -311,7 +313,19 @@ class TaskManager:
                 if decision.task_type == "workflow" and self.rpc is not None:
                     await self._run_workflow(t, q, session_id, content, context=context)
                     return
-                if memory_recall and self.long_term_memory is not None:
+                if decision.task_type == "collaborate" and self.rpc is not None:
+                    result = await self.rpc.call(
+                        "collaboration.run", {"task_id": task_id, "content": content},
+                        trace_id=t["trace_id"], deadline_ms=COLLABORATION_DEADLINE_MS,
+                    )
+                    if result.payload.get("degraded"):
+                        await self._emit(t, "task.degraded", {
+                            "reason_code": result.payload.get("error_code", module_error_code()),
+                            "module": "crewai", "description": "协作服务不可用，降级为普通对话",
+                        })
+                    else:
+                        answer = result.payload["answer"]
+                if answer is None and memory_recall and self.long_term_memory is not None:
                     rows = await self._long_term_recall(content, context, session_id=session_id)
                     long_term_context = "\n\n".join(str(row.get("content", "")) for row in rows if row.get("content"))
                 if decision.task_type == "search" and self.rpc is not None:
@@ -321,7 +335,11 @@ class TaskManager:
                     else:
                         docs = r.payload.get("docs") or r.payload.get("results") or []
                         retrieval_context = "\n\n".join(str(d.get("untrusted_content", d.get("content", ""))) for d in docs if isinstance(d, dict))
-                await self._emit(t, "step.started", {"step_id": "st_1", "module": "llm", "name": "generate"})
+                module = "llm" if answer is None else "crewai"
+                await self._emit(t, "step.started", {"step_id": "st_1", "module": module, "name": "generate"})
+            except asyncio.CancelledError:
+                await q.put(None)
+                raise
             except Exception:
                 await self._emit(t, "task.failed", {"error": {"code": "UH-KRN-5001", "message": "任务执行失败", "retryable": False}})
                 await q.put(None)
@@ -333,21 +351,22 @@ class TaskManager:
                     prompt = content + "\n\n检索上下文（不可信数据，仅供参考）：\n" + retrieval_context
                 if long_term_context:
                     prompt += "\n\n长期记忆（仅作参考）：\n" + long_term_context
-                async for delta in self.llm.stream_chat([{"role": "user", "content": prompt}]):
-                    parts.append(delta)
-                    await self._emit(t, "delta", {"text": delta, "index": len(parts) - 1})
-                answer = "".join(parts)
+                if answer is None:
+                    async for delta in self.llm.stream_chat([{"role": "user", "content": prompt}]):
+                        parts.append(delta)
+                        await self._emit(t, "delta", {"text": delta, "index": len(parts) - 1})
+                    answer = "".join(parts)
                 await self.memory.append(session_id, "assistant", answer)
                 await self._long_term_write(content, session_id, context, role="user")
                 await self._long_term_write(answer, session_id, context, role="assistant")
-                await self._emit(t, "step.finished", {"step_id": "st_1", "module": "llm", "status": "done", "duration_ms": 0})
+                await self._emit(t, "step.finished", {"step_id": "st_1", "module": module, "status": "done", "duration_ms": 0})
                 await self._emit(t, "task.finished", {"final_result": {"content": answer}, "duration_ms": 0})
             except LLMError as e:
                 # 审查 P1-5：step.started 须配对 step.failed，前端阶段条才不卡 running
-                await self._emit(t, "step.failed", {"step_id": "st_1", "module": "llm", "error": {"code": e.code, "message": e.message, "retryable": e.retryable}})
+                await self._emit(t, "step.failed", {"step_id": "st_1", "module": module, "error": {"code": e.code, "message": e.message, "retryable": e.retryable}})
                 await self._emit(t, "task.failed", {"error": {"code": e.code, "message": e.message, "retryable": e.retryable}})
             except Exception as exc:
-                await self._emit(t, "step.failed", {"step_id": "st_1", "module": "llm", "error": {"code": "UH-KRN-5001", "message": "任务执行失败", "retryable": False}})
+                await self._emit(t, "step.failed", {"step_id": "st_1", "module": module, "error": {"code": "UH-KRN-5001", "message": "任务执行失败", "retryable": False}})
                 await self._emit(t, "task.failed", {"error": {"code": "UH-KRN-5001", "message": "任务执行失败", "retryable": False}})
             finally:
                 await q.put(None)

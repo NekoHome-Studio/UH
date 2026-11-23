@@ -24,6 +24,7 @@ compose = ["redis>=5", "chromadb-client>=1.0,<2", "psycopg[binary]>=3.2,<4", "py
 dev = ["pytest>=8", "redis>=5", "fakeredis>=2"]
 retrieval = ["pypdf>=5", "chromadb>=0.5", "llama-index-core>=0.11", "llama-index-vector-stores-chroma>=0.3"]
 orchestration = ["langgraph>=1.2"]
+crewai = ["crewai==1.15.42", "fastapi>=0.115", "uvicorn>=0.30"]
 otel = ["opentelemetry-sdk>=1.41,<2", "opentelemetry-exporter-otlp>=1.41,<2"]
 
 [tool.setuptools]

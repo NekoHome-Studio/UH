@@ -37,6 +37,7 @@ from .confirmation import ConfirmationManager, ConfirmationError
 from .plugins import PluginDriver, PluginError
 from .sandbox import SandboxRunner
 from .scaler import CrewAIScaler
+from .collaboration import CollaborationManager, CrewAIWorker
 from .hooks import HookManager, HookPluginLoader
 from .themes import clear_uninstalled_theme, installed_theme, select_theme, theme_asset, theme_catalog
 
@@ -314,6 +315,13 @@ def create_app() -> FastAPI:
     app.state.rpc.register("llm.generate", _llm_cap)
     app.state.rpc.register("retrieval.search", _retrieval_cap, storage={"retrieval"})
     app.state.rpc.register("orchestration.run", _orchestration_cap, storage={"orchestration"})
+    app.state.collaboration = CollaborationManager(
+        scaler=None if os.getenv("UH_COLLABORATION_MODE") == "compose" else app.state.scaler,
+        bus=app.state.bus,
+        redis=app.state.memory.redis,
+        worker=CrewAIWorker(os.getenv("UH_CREWAI_URL", "http://uh-crewai:8080")),
+    )
+    app.state.rpc.register("collaboration.run", app.state.collaboration.run, storage={"crewai"})
     app.state.confirmations = ConfirmationManager()
     app.state.tasks = TaskManager(app.state.llm, app.state.memory, app.state.rpc, app.state.orchestration, app.state.long_term_memory, app.state.confirmations, bus=app.state.bus, plugin_host=lambda name: app.state.plugin_driver.tool_host(name))
 
@@ -361,10 +369,12 @@ def create_app() -> FastAPI:
             log_event(log, logging.WARNING, "capability.module.degraded", module="retrieval", reason=str(exc))
         await app.state.plugin_driver.restore_active()
         app.state.plugins = app.state.plugin_driver.list()
+        app.state.collaboration.start()
 
     @app.on_event("shutdown")
     async def stop_capabilities() -> None:
         try:
+            await app.state.collaboration.close()
             await app.state.plugin_driver.shutdown()
             await app.state.hooks.shutdown()
             await app.state.retrieval_host.close()

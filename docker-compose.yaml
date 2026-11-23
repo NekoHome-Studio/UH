@@ -28,12 +28,14 @@ services:
       UH_MEMORY_MASTER_KEY: ${UH_MEMORY_MASTER_KEY:?Set UH_MEMORY_MASTER_KEY}
       UH_PLUGIN_TRUSTED_KEYS_FILE: ${UH_PLUGIN_TRUSTED_KEYS_FILE:-/run/secrets/uh_plugin_trusted_keys}
       UH_PLUGIN_ROOT: /app/.uh/plugins
+      UH_COLLABORATION_MODE: compose
     secrets:
       - source: uh_auth_token
         target: ${UH_AUTH_TOKEN_FILE:-/run/secrets/uh_auth_token}
       - source: uh_plugin_trusted_keys
         target: ${UH_PLUGIN_TRUSTED_KEYS_FILE:-/run/secrets/uh_plugin_trusted_keys}
     volumes: ["uh-state:/app/.uh"]
+    networks: [default, collaboration]
 
   uh-llama-index:
     image: ultra-harness/llama-index:0.1.0
@@ -47,8 +49,22 @@ services:
 
   uh-crewai:
     image: ultra-harness/crewai:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/crewai/Dockerfile
     expose: ["8080"]
     profiles: ["collaborate"]
+    networks: [collaboration]
+    environment:
+      UH_LLM_PROVIDER: ${UH_LLM_PROVIDER:-mock}
+      UH_LLM_API_KEY: ${UH_LLM_API_KEY:-}
+      UH_LLM_BASE_URL: ${UH_LLM_BASE_URL:-https://api.openai.com/v1}
+      UH_LLM_MODEL: ${UH_LLM_MODEL:-gpt-4o-mini}
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/ready', timeout=1).close()"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
   redis:
     image: redis:7-alpine
@@ -88,6 +104,9 @@ volumes:
   uh-state:
   chroma-data:
   pg-data:
+
+networks:
+  collaboration:
 
 secrets:
   uh_auth_token:
