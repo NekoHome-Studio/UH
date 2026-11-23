@@ -13,7 +13,6 @@ import contextvars
 import fnmatch
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -24,6 +23,7 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping, NoReturn
 from urllib.parse import urlparse
 
 from . import tracing
+from .linux_sandbox import PluginCgroup, seccomp_filter, seccomp_mode
 from .logging import get_logger, log_event
 from .mcp import MAX_RESPONSE_BYTES, MCPHost, StdioTransport
 from .plugins import PluginManifest, PluginPolicyError
@@ -127,6 +127,45 @@ class SandboxPlan:
     platform: str
     degraded: bool = False
     reason: str | None = None
+    seccomp: str | None = None
+
+
+@contextlib.contextmanager
+def _spawn_options(plan: SandboxPlan, manifest: PluginManifest):
+    argv = list(plan.command)
+    if plan.seccomp is None:
+        yield argv, {}, None
+        return
+    root = os.environ.get("UH_SANDBOX_CGROUP_ROOT")
+    group = None
+    with contextlib.ExitStack() as stack:
+        try:
+            bpf = stack.enter_context(seccomp_filter(plan.seccomp))
+            if plan.seccomp != "enforce":
+                log_event(log, 30, "plugin.sandbox.seccomp_debug", plugin=manifest.name, mode=plan.seccomp)
+            options = {}
+            if bpf is not None:
+                fd = bpf.fileno()
+                argv[1:1] = ["--seccomp", str(fd)]
+                options["pass_fds"] = (fd,)
+            if root:
+                group = PluginCgroup.create(Path(root), int(plan.env["UH_SANDBOX_MEMORY_LIMIT_MB"]))
+                argv = group.launch_command(argv)
+            else:
+                log_event(log, 30, "plugin.sandbox.cgroup_unconfigured", plugin=manifest.name)
+        except (OSError, ValueError) as exc:
+            if group is not None:
+                group.close()
+            raise SandboxError(
+                "UH-KRN-2010", f"Linux 沙箱加固初始化失败：{exc}",
+                detail={"plugin": manifest.name, "violation": "linux_hardening"},
+            ) from exc
+        try:
+            yield argv, options, group
+        except BaseException:
+            if group is not None:
+                group.close()
+            raise
 
 
 def _entry_command(manifest: PluginManifest, package_dir: Path) -> list[str]:
@@ -145,9 +184,10 @@ def _entry_command(manifest: PluginManifest, package_dir: Path) -> list[str]:
 
 
 class SandboxProcess:
-    def __init__(self, process: subprocess.Popen, job: Any = None):
+    def __init__(self, process: subprocess.Popen, job: Any = None, cgroup: PluginCgroup | None = None):
         self.process = process
         self.job = job
+        self.cgroup = cgroup
 
     def terminate(self) -> None:
         if self.job is not None:
@@ -158,6 +198,9 @@ class SandboxProcess:
     def close(self) -> None:
         if self.job is not None:
             self.job.close()
+        if self.cgroup is not None:
+            self.cgroup.close()
+            self.cgroup = None
 
     async def wait(self, timeout_s: float | None = None) -> int:
         """SBX-03：超时须强杀并抛 CAP-5021，而非仅把 TimeoutExpired 透传给调用方。"""
@@ -256,17 +299,21 @@ class _SandboxStdioTransport(StdioTransport):
         self.manifest = manifest
         self.plan = plan
         self.job: _WindowsJob | None = None
+        self.cgroup: PluginCgroup | None = None
         self.stopped = False
 
     async def _spawn(self, argv: list[str], env: dict[str, str]) -> asyncio.subprocess.Process:
         if self.stopped:
             raise RuntimeError("插件进程已关闭")
-        process = await asyncio.create_subprocess_exec(
-            *argv, cwd=self.cwd, env=dict(self.plan.env),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            limit=MAX_RESPONSE_BYTES * 2,
-            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
-        )
+        with _spawn_options(self.plan, self.manifest) as (command, options, cgroup):
+            process = await asyncio.create_subprocess_exec(
+                *command, cwd=self.cwd, env=dict(self.plan.env),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                limit=MAX_RESPONSE_BYTES * 2,
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
+                **options,
+            )
+            self.cgroup = cgroup
         try:
             self.job = _WindowsJob.create(
                 self.manifest, process.pid, int(self.manifest.config.get("memory_limit_mb", 256)),
@@ -293,7 +340,12 @@ class _SandboxStdioTransport(StdioTransport):
 
     async def close(self) -> None:
         self.terminate()
-        await super().close()
+        try:
+            await super().close()
+        finally:
+            if self.cgroup is not None:
+                group, self.cgroup = self.cgroup, None
+                await asyncio.to_thread(group.close)
 
 
 class MCPPluginLoader(ProcessPluginLoader):
@@ -451,73 +503,88 @@ class SandboxRunner:
             return SandboxPlan(tuple(command), package_path, env, "windows", degraded=True, reason="M2 Windows FS/network enforcement is SDK/代理级")
         if manifest.type != "hook" and sys.platform == "darwin" and shutil.which("sandbox-exec"):
             return SandboxPlan(tuple(command), package_path, env, "macos")
-        if sys.platform.startswith("linux") and shutil.which("bwrap"):
+        if sys.platform.startswith("linux") and os.environ.get("UH_SANDBOX_OCI_STRICT") == "1":
+            raise SandboxError(
+                "UH-KRN-2010", "当前容器的 seccomp 策略禁止创建插件隔离命名空间",
+                detail={"plugin": manifest.name, "violation": "sandbox_unavailable"},
+            )
+        bwrap = shutil.which("bwrap") if sys.platform.startswith("linux") else None
+        if bwrap:
+            uid = os.getuid()
+            if uid == 0 or os.geteuid() == 0:
+                raise SandboxError(
+                    "UH-KRN-2010", "Linux 插件沙箱须由非 root 用户启动",
+                    detail={"plugin": manifest.name, "violation": "sandbox_uid"},
+                )
+            try:
+                mode = seccomp_mode()
+            except ValueError as exc:
+                raise SandboxError(
+                    "UH-KRN-2010", str(exc), detail={"plugin": manifest.name, "violation": "seccomp_mode"},
+                ) from exc
             wrapped = [
-                "bwrap", "--die-with-parent", "--unshare-pid", "--unshare-net",
+                str(Path(bwrap).resolve()), "--die-with-parent", "--new-session", "--unshare-user",
+                "--uid", str(uid), "--gid", str(os.getgid()),
+                "--unshare-pid", "--unshare-net", "--unshare-ipc", "--cap-drop", "ALL",
                 "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
                 "--ro-bind", "/lib", "/lib", "--bind", str(package_path), "/sandbox",
-                "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chdir", "/sandbox",
+                "--ro-bind-try", "/lib64", "/lib64",
+                "--proc", "/proc", "--remount-ro", "/proc",
+                "--dev", "/dev", "--remount-ro", "/dev/pts", "--remount-ro", "/dev",
+                "--tmpfs", "/tmp", "--chdir", "/sandbox",
             ]
-            if manifest.type in {"hook", "tool"}:
-                entry = Path(command[-1]).relative_to(package_path).as_posix()
-                command[-1] = "/sandbox/" + entry
-                if command[0] == sys.executable and manifest.type == "hook":
-                    command[0] = "/usr/bin/python3"
-                if Path("/lib64").exists():
-                    wrapped.extend(["--ro-bind", "/lib64", "/lib64"])
-                env["UH_SANDBOX_ROOT"] = "/sandbox"
+            entry = Path(command[-1]).relative_to(package_path).as_posix()
+            command[-1] = "/sandbox/" + entry
+            env.update(UH_SANDBOX_ROOT="/sandbox", HOME="/tmp", TMPDIR="/tmp", TEMP="/tmp", TMP="/tmp")
             if manifest.type == "tool":
                 wrapped.extend(["--ro-bind", str(sdk_root / "kernel"), "/uh-sdk/kernel"])
                 env["PYTHONPATH"] = "/uh-sdk"
-                # SBX Linux 修复：venv/自定义解释器不在 /usr 下时须挂进沙箱，
-                # 否则 bwrap execvp 报 No such file or directory（Kylin 实测）。
-                exe = Path(command[0])
-                if exe.is_absolute() and not str(exe).startswith(("/usr/", "/bin/", "/lib")):
-                    binds: set[str] = set()
-                    interp_root = exe.parent.parent          # .venv/bin/python -> .venv
-                    binds.add(str(interp_root if interp_root.exists() else exe.parent))
-                    # venv python 常为符号链接，指向真实解释器（如 uv 装的 ~/.local/share/uv/...）；
-                    # 必须把 resolve 后的真实路径一并挂入，否则 execvp 仍 No such file。
-                    try:
-                        real = exe.resolve()
-                        if real != exe:
-                            binds.add(str(real.parent.parent if real.parent.name == "bin" else real.parent))
-                    except OSError:
-                        pass
-                    for b in sorted(binds):
-                        if Path(b).exists():
-                            wrapped.extend(["--ro-bind", b, b])
-            # SBX-04：Linux 无 Job Object，用 ulimit -v 限制虚拟内存（KB），
-            # 超限触发 MemoryError/进程失败，等价 Windows 的 per-process 限额。
-            mem_mb = int(manifest.config.get("memory_limit_mb", 256))
-            if mem_mb > 0:
-                inner = " ".join(shlex.quote(str(x)) for x in command)
-                wrapped += ["/bin/sh", "-c", f"ulimit -v {mem_mb * 1024}; exec {inner}"]
-            else:
-                wrapped += command
-            return SandboxPlan(tuple(wrapped), package_path, env, "linux")
+            if manifest.type == "hook" and command[0] == sys.executable:
+                command[0] = "/usr/bin/python3"
+            if len(command) == 2 and command[0] == sys.executable:
+                # A venv or uv-managed CPython can live outside the system binds.
+                exe = Path(sys.executable)
+                prefixes = set()
+                for interpreter in sorted({exe, exe.resolve()}):
+                    if not str(interpreter).startswith(("/usr/", "/bin/", "/lib/", "/lib64/")):
+                        prefix = interpreter.parent.parent if interpreter.parent.name == "bin" else interpreter
+                        prefixes.add(str(prefix))
+                for prefix in sorted(prefixes):
+                    wrapped.extend(["--ro-bind", prefix, prefix])
+            wrapped.extend(["--remount-ro", "/", "--"])
+            # Verify the effective identity inside the namespace before executing
+            # the entry point. Retain the per-process address-space limit.
+            guard = (
+                'test "$(/usr/bin/id -u)" -ne 0\n'
+                'if [ "$1" -gt 0 ]; then ulimit -v "$1"; fi\n'
+                'shift\nexec "$@"'
+            )
+            wrapped.extend(["/bin/sh", "-ec", guard, "uh-sandbox", str(limits.memory_limit_mb * 1024), *command])
+            return SandboxPlan(tuple(wrapped), package_path, env, "linux", seccomp=mode)
         if self.enforce:
             raise SandboxError("UH-KRN-2010", "当前平台没有可用的 M2 沙箱运行器", detail={"plugin": manifest.name, "violation": "sandbox_unavailable"})
         return SandboxPlan(tuple(command), package_path, env, sys.platform, degraded=True, reason="sandbox runner unavailable")
 
     def launch(self, manifest: PluginManifest, package_dir: str | Path, *, capture_output: bool = True) -> SandboxProcess:
         plan = self.build_plan(manifest, package_dir)
-        process = subprocess.Popen(
-            list(plan.command),
-            cwd=str(plan.cwd),
-            env=dict(plan.env),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
-            stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
-            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
-        )
+        with _spawn_options(plan, manifest) as (command, options, cgroup):
+            process = subprocess.Popen(
+                command,
+                cwd=str(plan.cwd),
+                env=dict(plan.env),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+                stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
+                **options,
+            )
         try:
             job = _WindowsJob.create(manifest, process.pid, int(manifest.config.get("memory_limit_mb", 256)), int(manifest.config.get("timeout_ms", 5000)))
         except Exception:
             process.kill()
             process.communicate()
             raise
-        return SandboxProcess(process, job)
+        return SandboxProcess(process, job, cgroup)
 
     async def run(self, manifest: PluginManifest, package_dir: str | Path, input_data: bytes | None = None, *, capture_output: bool = True) -> tuple[int, bytes, bytes]:
         sandbox_process = self.launch(manifest, package_dir, capture_output=capture_output)

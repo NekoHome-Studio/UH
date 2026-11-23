@@ -2,12 +2,13 @@ FROM python:3.12-slim-bookworm AS build
 WORKDIR /src
 COPY pyproject.toml ./
 COPY kernel/ ./kernel/
+COPY deploy/security/seccomp.json ./deploy/security/seccomp.json
 ARG UH_INSTALL_EXTRAS=compose
 RUN python -m pip install --no-cache-dir --prefix=/install ".[${UH_INSTALL_EXTRAS}]"
 
 FROM python:3.12-slim-bookworm AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bubblewrap \
+    && apt-get install -y --no-install-recommends bubblewrap libseccomp2 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/local/bin/python3 /usr/bin/python3 \
     && groupadd --gid 10001 uh \

@@ -2,6 +2,14 @@ services:
   uh-kernel:
     image: ultra-harness/kernel:0.1.0
     build: .
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=128m,mode=1777"]
+    security_opt: ["seccomp:./deploy/security/seccomp.json", "no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     ports: ["8080:8080"]
     depends_on:
       redis:
@@ -28,6 +36,7 @@ services:
       UH_MEMORY_MASTER_KEY: ${UH_MEMORY_MASTER_KEY:?Set UH_MEMORY_MASTER_KEY}
       UH_PLUGIN_TRUSTED_KEYS_FILE: ${UH_PLUGIN_TRUSTED_KEYS_FILE:-/run/secrets/uh_plugin_trusted_keys}
       UH_PLUGIN_ROOT: /app/.uh/plugins
+      UH_SANDBOX_OCI_STRICT: "1"
       UH_COLLABORATION_MODE: compose
     secrets:
       - source: uh_auth_token
@@ -39,16 +48,40 @@ services:
 
   uh-llama-index:
     image: ultra-harness/llama-index:0.1.0
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=128m,mode=1777"]
+    security_opt: ["seccomp:./deploy/security/seccomp.json", "no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     expose: ["8080"]
     depends_on: [chroma]
 
   uh-langgraph:
     image: ultra-harness/langgraph:0.1.0
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=128m,mode=1777"]
+    security_opt: ["seccomp:./deploy/security/seccomp.json", "no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     expose: ["8080"]
     depends_on: [redis, postgres]
 
   uh-crewai:
     image: ultra-harness/crewai:0.1.0
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=128m,mode=1777"]
+    security_opt: ["seccomp:./deploy/security/seccomp.json", "no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     build:
       context: .
       dockerfile: deploy/crewai/Dockerfile

@@ -30,4 +30,4 @@ docker compose cp ./my-plugin.uhpkg uh-kernel:/tmp/my-plugin.uhpkg
 docker compose exec -T uh-kernel uh plugin install /tmp/my-plugin.uhpkg
 ```
 
-也可以用 `docker exec <kernel-container> uh plugin install /tmp/my-plugin.uhpkg`。安装请求由容器内的 `127.0.0.1:8080` 内核处理，成功时返回 `status: active`。插件文件和状态保存在 `/app/.uh` 卷。执行子进程的插件由现有 Linux 沙箱启动，部署节点及容器运行时需支持 bubblewrap 所需的用户命名空间。
+也可以用 `docker exec <kernel-container> uh plugin install /tmp/my-plugin.uhpkg`。安装请求由容器内的 `127.0.0.1:8080` 内核处理，成功时返回 `status: active`。插件文件和状态保存在 `/app/.uh` 卷。安装需要执行子进程的插件前，按系统加固手册启用 bubblewrap 的 Compose overlay，并确认部署节点及容器运行时支持所需的命名空间。 [容器插件部署](security-hardening.md#在容器中运行插件)

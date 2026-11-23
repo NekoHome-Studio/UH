@@ -2,6 +2,7 @@
 !Dockerfile
 !pyproject.toml
 !kernel/*.py
+!deploy/security/seccomp.json
 !ui/*.html
 !ui/*.js
 !docs/contracts/events.schema.json

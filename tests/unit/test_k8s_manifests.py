@@ -214,6 +214,7 @@ def test_secrets_are_external_and_references_resolve(manifests):
         (CREWAI, "UH_LLM_API_KEY"), ("postgres", "POSTGRES_PASSWORD"),
     }
     found = set()
+    secret_volumes = set()
     for (kind, name), doc in manifests.items():
         if kind not in {"Deployment", "StatefulSet"}:
             continue
@@ -231,10 +232,20 @@ def test_secrets_are_external_and_references_resolve(manifests):
                     assert ref["name"] == "uh-runtime" and ref["key"] in entries
                     found.add((name, field))
         for volume in pod.get("volumes", []):
+            if "emptyDir" in volume:
+                assert kind == "Deployment" and volume["name"] in {"tmp", "state"}
+                assert set(volume) == {"name", "emptyDir"}
+                continue
             ref = volume["secret"]
             assert ref["secretName"] == "uh-runtime"
             assert all(item["key"] in entries for item in ref["items"])
+            secret_volumes.add((name, volume["name"], tuple(sorted(
+                (item["key"], item["path"]) for item in ref["items"]
+            ))))
     assert found == sensitive
+    assert secret_volumes == {(KERNEL, "runtime", (
+        ("uh_auth_token", "uh_auth_token"), ("uh_plugin_trusted_keys", "uh_plugin_trusted_keys"),
+    ))}
 
 
 @pytest.mark.parametrize(("target", "replicas", "reason"), [

@@ -667,13 +667,23 @@ def trusted_git_source(monkeypatch, tmp_path):
         def serve_git(self):
             url = urlsplit(self.path)
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            completed = subprocess.run(["git", "http-backend"], input=body, capture_output=True, check=True, timeout=15, env={
+            env = {
                 **os.environ, "GIT_PROJECT_ROOT": str(tmp_path), "GIT_HTTP_EXPORT_ALL": "1",
                 "REQUEST_METHOD": self.command, "PATH_INFO": url.path, "QUERY_STRING": url.query,
                 "CONTENT_TYPE": self.headers.get("Content-Type", ""), "CONTENT_LENGTH": str(len(body)),
                 "REMOTE_ADDR": self.client_address[0],
                 "HTTP_GIT_PROTOCOL": self.headers.get("Git-Protocol", ""),
-            })
+            }
+            # git http-backend 在并发/负载下偶发非零退出（历史 flaky）；重试 3 次消除抖动
+            last = None
+            for attempt in range(3):
+                completed = subprocess.run(["git", "http-backend"], input=body, capture_output=True, timeout=15, env=env)
+                if completed.returncode == 0:
+                    break
+                last = completed
+                time.sleep(0.2 * (attempt + 1))
+            else:
+                raise subprocess.CalledProcessError(last.returncode, "git http-backend", last.stdout, last.stderr)
             headers, _, response = completed.stdout.partition(b"\r\n\r\n")
             self.send_response(200)
             for line in headers.decode("ascii").splitlines():

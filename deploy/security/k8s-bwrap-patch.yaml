@@ -1,0 +1,11 @@
+# Apply only to Deployment/uh-kernel after installing the generated profile on every target node.
+spec:
+  template:
+    spec:
+      securityContext:
+        seccompProfile: { type: Localhost, localhostProfile: uh/seccomp-bwrap.json }
+      containers:
+        - name: kernel
+          env:
+            - { name: UH_SANDBOX_OCI_STRICT, value: "0" }
+            - { name: UH_SANDBOX_SECCOMP, value: enforce }

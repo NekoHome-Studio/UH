@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { verifyComposeExposure } from "./verify-compose-exposure.mjs";
 import { readK8sManifests, verifyK8sManifests } from "./verify-k8s-manifests.mjs";
 import { verifyMetricsCardinality } from "./verify-metrics-cardinality.mjs";
+import { verifySecurityHardening } from "./verify-security-hardening.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEPS = path.join(ROOT, ".work", "verify-deps");
 const FULL = process.argv.includes("--full");
@@ -145,6 +146,12 @@ try {
   check("L Desktop 壳与双端一致性", true, (out || "").trim().split("\n").pop() || "Tauri 指向内核 UI，无前端副本");
 } catch (e) {
   check("L Desktop 壳与双端一致性", false, childError(e));
+}
+try {
+  const errors = verifySecurityHardening(yaml, ROOT);
+  check("M 系统级安全加固", errors.length === 0, errors.join("; ") || "seccomp / cgroups / read-only root / non-root");
+} catch (e) {
+  check("M 系统级安全加固", false, childError(e));
 }
 const failed = results.filter(r => !r.ok && !r.info);
 console.log(failed.length === 0 ? "VERIFY_ALL_PASSED (" + results.length + " checks" + (FULL ? ", full" : ", fast") + ")" : "VERIFY_FAILED=" + failed.length);

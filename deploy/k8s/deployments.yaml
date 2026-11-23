@@ -13,9 +13,19 @@ spec:
       labels: { app: uh-kernel, tier: kernel }
     spec:
       serviceAccountName: uh-scaler
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: Localhost, localhostProfile: uh/seccomp.json }
       containers:
         - name: kernel
           image: ultra-harness/kernel:0.1.0
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
           ports: [{ name: http, containerPort: 8080 }]
           readinessProbe:
             # /ready reports Redis failures in the response body with HTTP 200.
@@ -60,9 +70,14 @@ spec:
                 secretKeyRef: { name: uh-runtime, key: UH_MEMORY_MASTER_KEY }
             - { name: UH_PLUGIN_TRUSTED_KEYS_FILE, value: /run/secrets/uh_plugin_trusted_keys }
             - { name: UH_PLUGIN_ROOT, value: /app/.uh/plugins }
+            - { name: UH_SANDBOX_OCI_STRICT, value: "1" }
           volumeMounts:
             - { name: runtime, mountPath: /run/secrets, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: state, mountPath: /app/.uh }
       volumes:
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 128Mi } }
+        - { name: state, emptyDir: {} }
         - name: runtime
           secret:
             secretName: uh-runtime
@@ -85,9 +100,22 @@ spec:
       labels: { app: uh-llama-index, tier: capability }
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: Localhost, localhostProfile: uh/seccomp.json }
+      volumes:
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 128Mi } }
       containers:
         - name: llama-index
           image: ultra-harness/llama-index:0.1.0
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
           ports: [{ name: http, containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /ready, port: http }
@@ -113,9 +141,22 @@ spec:
       labels: { app: uh-langgraph, tier: capability }
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: Localhost, localhostProfile: uh/seccomp.json }
+      volumes:
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 128Mi } }
       containers:
         - name: langgraph
           image: ultra-harness/langgraph:0.1.0
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
           ports: [{ name: http, containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /ready, port: http }
@@ -147,10 +188,23 @@ spec:
       labels: { app: uh-crewai, tier: capability }
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: Localhost, localhostProfile: uh/seccomp.json }
+      volumes:
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 128Mi } }
       terminationGracePeriodSeconds: 10
       containers:
         - name: crewai
           image: ultra-harness/crewai:0.1.0
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           readinessProbe:

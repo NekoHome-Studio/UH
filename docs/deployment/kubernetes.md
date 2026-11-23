@@ -6,6 +6,8 @@ Redis、Chroma、PostgreSQL 各有一个 StatefulSet 和独立 PVC。PVC 使用�
 
 ## 首次部署
 
+应用 Deployment 前，在所有可调度目标节点安装 seccomp profile 并配置 Pod PID 限额。运行需要子进程的插件前配置内核的 bubblewrap 启动 profile。 [系统级安全加固](security-hardening.md#compose-和-kubernetes)
+
 由部署环境创建 `uh-prod`，再从外部密钥源注入 [Secret 模板](../../deploy/k8s/secrets.yaml) 的占位符。注入器应保留字符串类型和换行，缺少必填值时应停止。信任库的值为 JSON，暂无受信插件时使用空对象。使用 mock LLM 时把 `UH_LLM_API_KEY` 注入为空字符串。渲染后的对象直接通过 stdin 交给 `kubectl create -f -`，无需写入文件。下面的例子依赖项目已有的 PyYAML，并从已注入的环境变量读取值。
 
 ```bash

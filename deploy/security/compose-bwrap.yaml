@@ -1,0 +1,9 @@
+# Compose >= 2.24.4. Generate .work/seccomp-bwrap.json before starting.
+services:
+  uh-kernel:
+    environment:
+      UH_SANDBOX_OCI_STRICT: "0"
+      UH_SANDBOX_SECCOMP: enforce
+    security_opt: !override
+      - seccomp:./.work/seccomp-bwrap.json
+      - no-new-privileges:true
