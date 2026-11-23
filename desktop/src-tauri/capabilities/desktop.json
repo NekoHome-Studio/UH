@@ -1,0 +1,8 @@
+{
+  "identifier": "desktop",
+  "description": "Report task status from the shared loopback UI.",
+  "local": true,
+  "windows": ["main"],
+  "remote": {"urls": ["http://127.0.0.1:8080/*"]},
+  "permissions": ["allow-report-task-state"]
+}

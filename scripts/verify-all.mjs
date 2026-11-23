@@ -139,6 +139,13 @@ try {
 } catch (e) {
   check("K Prometheus 指标标签基数", false, childError(e));
 }
+// L Desktop 壳与双端一致性（M3-6）：子进程跑 verify-desktop.mjs（含 assert，失败即非零退出）
+try {
+  const out = execSync(`"${process.execPath}" "${path.join(ROOT, "scripts", "verify-desktop.mjs")}"`, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  check("L Desktop 壳与双端一致性", true, (out || "").trim().split("\n").pop() || "Tauri 指向内核 UI，无前端副本");
+} catch (e) {
+  check("L Desktop 壳与双端一致性", false, childError(e));
+}
 const failed = results.filter(r => !r.ok && !r.info);
 console.log(failed.length === 0 ? "VERIFY_ALL_PASSED (" + results.length + " checks" + (FULL ? ", full" : ", fast") + ")" : "VERIFY_FAILED=" + failed.length);
 process.exit(failed.length === 0 ? 0 : 1);

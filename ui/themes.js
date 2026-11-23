@@ -19,6 +19,10 @@
     let themes = new Map();
     let fonts = [];
     let generation = 0;
+    let requestId = 0;
+    let pending = false;
+    let catalog = "";
+    let active = "";
 
     function request(path, options = {}) {
       const token = getToken();
@@ -48,30 +52,50 @@
       }
     }
 
-    async function reload() {
-      const current = ++generation;
-      picker.disabled = true;
-      feedback.textContent = "";
-      render(null, current);
-      picker.replaceChildren(new Option("默认主题", ""));
+    async function refresh(reset = false) {
+      if (pending && !reset) return;
+      const current = ++requestId;
+      pending = true;
+      if (reset) {
+        catalog = active = "";
+        themes.clear();
+        picker.disabled = true;
+        feedback.textContent = "";
+        picker.replaceChildren(new Option("默认主题", ""));
+        render(null, ++generation);
+      }
       try {
-        const response = await request("/api/v1/themes");
+        const response = await request("/api/v1/themes", { cache: "no-store" });
         if (response.status === 401) return;
         if (!response.ok) throw new Error("主题列表加载失败");
         const { data } = await response.json();
-        if (current !== generation) return;
-        themes = new Map(data.themes.map(theme => [theme.name, theme]));
-        for (const name of themes.keys()) picker.add(new Option(name, name));
-        picker.value = data.active ?? "";
-        render(themes.get(picker.value), current);
-        picker.disabled = !themes.size;
+        if (current !== requestId) return;
+        const nextCatalog = JSON.stringify(data.themes);
+        const nextActive = data.active ?? "";
+        if (nextCatalog !== catalog || nextActive !== active) {
+          if (nextCatalog !== catalog) {
+            catalog = nextCatalog;
+            themes = new Map(data.themes.map(theme => [theme.name, theme]));
+            picker.replaceChildren(new Option("默认主题", ""));
+            for (const name of themes.keys()) picker.add(new Option(name, name));
+          }
+          active = picker.value = nextActive;
+          render(themes.get(active), ++generation);
+        }
+        if (feedback.textContent === "主题列表加载失败") feedback.textContent = "";
       } catch {
-        if (current === generation) feedback.textContent = "主题列表加载失败";
+        if (current === requestId) feedback.textContent = "主题列表加载失败";
+      } finally {
+        if (current === requestId) {
+          pending = false;
+          picker.disabled = !themes.size;
+        }
       }
     }
 
     picker.addEventListener("change", async () => {
-      const current = ++generation;
+      const current = ++requestId;
+      pending = true;
       picker.disabled = true;
       feedback.textContent = "";
       try {
@@ -81,18 +105,30 @@
         });
         if (!response.ok) throw new Error("主题切换失败");
         const { data } = await response.json();
-        if (current === generation) render(themes.get(data.active), current);
+        if (current === requestId) {
+          active = picker.value = data.active ?? "";
+          render(themes.get(active), ++generation);
+        }
       } catch {
-        if (current === generation) {
-          await reload();
+        if (current === requestId) {
+          picker.value = active;
           feedback.textContent = "主题切换失败";
         }
       } finally {
-        if (current === generation) picker.disabled = false;
+        if (current === requestId) {
+          pending = false;
+          picker.disabled = !themes.size;
+        }
       }
     });
-    reload();
-    return reload;
+    function refreshVisible() {
+      if (!document.hidden) return refresh();
+    }
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    setInterval(refreshVisible, 3000);
+    refresh(true);
+    return () => refresh(true);
   }
 
   const api = { createThemeApplier, mountThemePicker };

@@ -55,7 +55,11 @@ class LLMClient:
         self.timeout_ms = timeout_ms if timeout_ms is not None else int(_env("UH_LLM_TIMEOUT_MS", "30000"))
         self.max_retries = max_retries if max_retries is not None else int(_env("UH_LLM_MAX_RETRIES", "3"))
         self.backoff_base_s = backoff_base_s
-        self._client = client or httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout_ms / 1000.0)
+        # A local model endpoint must stay local even when a system proxy is configured.
+        loopback = httpx.URL(self.base_url).host in {"localhost", "127.0.0.1", "::1"}
+        self._client = client or httpx.AsyncClient(
+            base_url=self.base_url, timeout=self.timeout_ms / 1000.0, trust_env=not loopback,
+        )
         self._usage: dict[str, dict[str, int]] = {}
 
     @property

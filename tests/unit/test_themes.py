@@ -192,3 +192,57 @@ def test_theme_apply_updates_and_clears_256_variables():
         apply(null);
         assert.equal(style.size, 0);
     """], check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js required for the theme UI unit test")
+def test_theme_picker_refreshes_visible_clients_in_both_directions():
+    subprocess.run(["node", "--input-type=module", "-"], cwd=ROOT, check=True, text=True, input=r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const script = fs.readFileSync('ui/themes.js', 'utf8');
+const requests = [];
+const themes = [{name: 'light', css_variables: {'--uh-bg-primary': '#fff'}}];
+let active = null;
+function client() {
+    const values = new Map();
+    const handlers = {};
+    const picker = {
+        addEventListener(name, callback) { handlers[name] = callback; },
+        replaceChildren() {}, add() {},
+    };
+    const scope = vm.createContext({
+        window: { addEventListener(name, callback) { handlers[name] = callback; } },
+        document: { addEventListener() {}, hidden: false, documentElement: { style: {
+            removeProperty: name => values.delete(name), setProperty: (name, value) => values.set(name, value),
+        } } },
+        Option: class {},
+        setInterval(callback, interval) { assert.equal(interval, 3000); handlers.tick = callback; },
+        async fetch(path, options) {
+            requests.push([path, options.method]);
+            if (options.method === 'PUT') active = JSON.parse(options.body).name;
+            return {ok: true, json: async () => ({data: {active, themes}})};
+        },
+    });
+    vm.runInContext(script, scope);
+    scope.UHThemes.mountThemePicker(picker, {}, () => '');
+    return {values, handlers, picker};
+}
+const [web, desktop] = [client(), client()];
+await new Promise(resolve => setImmediate(resolve));
+desktop.picker.value = 'light';
+await desktop.handlers.change();
+await web.handlers.tick();
+assert.equal(web.picker.value, 'light');
+assert.equal(web.values.get('--uh-bg-primary'), '#fff');
+web.picker.value = '';
+await web.handlers.change();
+await desktop.handlers.focus();
+assert.equal(desktop.picker.value, '');
+assert.equal(desktop.values.size, 0);
+assert.deepEqual(requests, [
+    ['/api/v1/themes', undefined], ['/api/v1/themes', undefined],
+    ['/api/v1/themes/active', 'PUT'], ['/api/v1/themes', undefined],
+    ['/api/v1/themes/active', 'PUT'], ['/api/v1/themes', undefined],
+]);
+""")

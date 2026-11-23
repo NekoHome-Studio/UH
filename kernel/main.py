@@ -44,6 +44,16 @@ from .themes import clear_uninstalled_theme, installed_theme, select_theme, them
 _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 _UI_STATE_MACHINE = Path(__file__).resolve().parent.parent / "ui" / "state-machine.js"
 _UI_THEMES = _UI.with_name("themes.js")
+_UI_APP = _UI.with_name("app.js")
+_DESKTOP_UI_HEADERS = {
+    "X-UH-Desktop": "1",
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "connect-src 'self' http://127.0.0.1:8080 ws://127.0.0.1:8080 ipc: http://ipc.localhost; "
+        "object-src 'none'; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'"
+    ),
+}
 
 setup_logging()
 log = get_logger("kernel.http")
@@ -423,7 +433,11 @@ def create_app() -> FastAPI:
             # 二审 N1/N2 修复：默认值与 WS 对齐（UH_LOCAL_MODE 无默认，单设 UH_AUTH_REQUIRED=1 即生效）；
             # 鉴权覆盖所有业务端点含遗留别名（/memory/*、/plugins），仅 ops 与 UI 静态豁免。
             auth_required = _truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))
-            _exempt = request.url.path in {"/health", "/ready", "/metrics", "/", "/static/state-machine.js", "/static/themes.js", "/docs", "/openapi.json", "/redoc"}
+            _exempt = request.url.path in {
+                "/health", "/ready", "/metrics", "/",
+                "/static/state-machine.js", "/static/themes.js", "/static/app.js",
+                "/docs", "/openapi.json", "/redoc",
+            }
             if auth_required and not _exempt:
                 expected = _read_auth_token()
                 # 与 WS 一致：Bearer 头优先，亦接受 ?token= 查询参数（本地/测试便利）。
@@ -705,8 +719,9 @@ def create_app() -> FastAPI:
         return {"task_type": d.task_type, "mode": d.mode, "rule": d.rule, "confidence": d.confidence, "fallback": d.fallback}
 
     @app.get("/")
-    async def index():
-        return FileResponse(_UI)
+    async def index(request: Request):
+        headers = _DESKTOP_UI_HEADERS if request.query_params.get("desktop") == "1" else None
+        return FileResponse(_UI, headers=headers)
 
     @app.get("/static/state-machine.js", include_in_schema=False)
     async def state_machine_asset():
@@ -715,6 +730,10 @@ def create_app() -> FastAPI:
     @app.get("/static/themes.js", include_in_schema=False)
     async def themes_asset():
         return FileResponse(_UI_THEMES, media_type="application/javascript")
+
+    @app.get("/static/app.js", include_in_schema=False)
+    async def app_asset():
+        return FileResponse(_UI_APP, media_type="application/javascript")
 
     @app.post("/api/v1/sessions", status_code=201)
     async def create_session(response: Response, request: Request):
