@@ -27,6 +27,7 @@ from .router import classify
 from .memory import create_short_term_memory
 from .long_term_memory import create_long_term_memory
 from .llm import create_llm_client
+from .metrics import CONTENT_TYPE, KernelMetrics, MetricsMiddleware
 from .tasks import TaskManager
 from .protocol import EventBus, CapabilityRegistry, StorageGuard, Envelope
 from .mcp import MCPHost, InProcessTransport, MCPError
@@ -236,12 +237,14 @@ def create_app() -> FastAPI:
     app.state.guard.declare("memory.long_term", {"long_term"})  # 三审 N9：长期记忆命名空间
     app.state.long_term_memory = create_long_term_memory(guard=app.state.guard)
     app.state.llm = create_llm_client()
-    app.state.rpc = CapabilityRegistry(app.state.bus, app.state.guard)
+    telemetry = KernelMetrics(app.state.llm.model, app.state.bus)
+    app.state.rpc = CapabilityRegistry(app.state.bus, app.state.guard, observe_call=telemetry.observe_capability)
     sandbox_runner = SandboxRunner()
     app.state.plugin_driver = PluginDriver(
         sandbox_runner=sandbox_runner,
         loaders={"hook": HookPluginLoader(app.state.hooks, sandbox_runner)},
         capability_registry=app.state.rpc,
+        observe_crash=telemetry.observe_plugin_crash,
     )
     # Compatibility snapshot for callers that inspected the M1 placeholder.
     app.state.plugins = app.state.plugin_driver.list()
@@ -428,6 +431,7 @@ def create_app() -> FastAPI:
                 is_replay = bool(cache_key and cache_key in app.state.idempotency_cache)
                 if is_replay:
                     cached = app.state.idempotency_cache[cache_key]
+                    request.state.task_type = cached.get("task_type")
                     response = Response(
                         content=cached["body"],
                         status_code=cached["status_code"],
@@ -496,6 +500,7 @@ def create_app() -> FastAPI:
                             "status_code": response.status_code,
                             "headers": cached_headers,
                             "media_type": "application/json",
+                            "task_type": getattr(request.state, "task_type", None),
                             "stored_at": time.time(),
                         }
                         # 审查修复：TTL + 容量上限，防进程内 dict 单调增长
@@ -515,20 +520,22 @@ def create_app() -> FastAPI:
                 if _idem_lock is not None:
                     _idem_lock.release()
 
+    # Wrap the tracing middleware as it can respond before routing.
+    app.add_middleware(MetricsMiddleware, metrics=telemetry, routes=app.routes)
+
     @app.get("/health")
     async def health():
         return {"status": "ok", "version": __version__}
 
     @app.get("/metrics", response_class=Response)
     async def metrics():
-        short_term_keys = await app.state.memory.key_count()
-        body = (
-            "# TYPE uh_memory_short_term_keys gauge\n"
-            f"uh_memory_short_term_keys {short_term_keys}\n"
-            "# TYPE uh_memory_long_term_entries gauge\n"
-            f"uh_memory_long_term_entries {app.state.long_term_memory.entry_count}\n"
+        body = telemetry.render(
+            short_term_keys=await app.state.memory.key_count(),
+            long_term_memory=app.state.long_term_memory,
+            plugin_records=app.state.plugin_driver.records.values(),
+            token_usage=app.state.llm.uh_token_usage_total,
         )
-        return Response(content=body, media_type="text/plain")
+        return Response(content=body, headers={"Content-Type": CONTENT_TYPE})
 
     @app.get("/ready")
     async def ready():
@@ -658,7 +665,7 @@ def create_app() -> FastAPI:
         return _envelope({"entries": app.state.long_term_memory.export(authorize_sensitive=authorized)})
 
     @app.post("/api/v1/dev/route", include_in_schema=False)
-    async def dev_route(req: RouteRequest):
+    async def dev_route(req: RouteRequest, request: Request):
         if not _dev_enabled():  # 二审 N6：dev_route 补门禁
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "not found")), ensure_ascii=False), status_code=404, media_type="application/json")
         # 开发/测试端点：M0-3 messages 端点落地后移除；不在公开 OpenAPI 契约内
@@ -671,6 +678,7 @@ def create_app() -> FastAPI:
         log_event(log, logging.INFO, "kernel.route.decided", task_type=d.task_type, mode=d.mode, rule=d.rule, confidence=d.confidence)
         if d.fallback:
             log_event(log, logging.WARNING, "route.fallback", reason="unrecognized", task_type="chat")
+        request.state.task_type = d.task_type
         return {"task_type": d.task_type, "mode": d.mode, "rule": d.rule, "confidence": d.confidence, "fallback": d.fallback}
 
     @app.get("/")
@@ -719,6 +727,7 @@ def create_app() -> FastAPI:
             owner_client_id=client_id,
             owner_token=owner_token,
         )
+        request.state.task_type = app.state.tasks.tasks.get(task_id, {}).get("task_type")
         # Keep the local client identity available to the subsequent browser
         # WebSocket handshake when the session was supplied directly.
         response.set_cookie("uh_client_id", _client_cookie_value(client_id), httponly=True, samesite="lax")
@@ -824,6 +833,7 @@ def create_app() -> FastAPI:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "无权访问会话", detail={"resource": "session", "session_id": req.session_id})), ensure_ascii=False), status_code=403, media_type="application/json")
         owner_token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
         task_id, trace_id = app.state.tasks.create_tool_task(req.session_id, req.tool_name, req.arguments, req.risk_level, app.state.retrieval_host, owner_client_id=client_id, owner_token=owner_token)
+        request.state.task_type = "tool"
         return _envelope({"task_id": task_id, "trace_id": trace_id, "sse_url": "/api/v1/tasks/" + task_id + "/stream"})
 
     @app.get("/api/v1/dev/confirmations")

@@ -16,7 +16,7 @@ from typing import Any, AsyncIterator
 from . import tracing
 from .llm import LLMError
 from .orchestration import OrchestrationError
-from .router import classify
+from .router import RouteDecision, classify
 from .event_mapping import EventMapper
 from .protocol import Envelope, module_error_code
 from .mcp import MCPError
@@ -85,6 +85,10 @@ class TaskManager:
         owner_client_id: str | None = None,
         owner_token: str | None = None,
     ) -> tuple[str, str]:
+        try:
+            decision = classify(content, mode)
+        except ValueError:
+            decision = classify(content, "auto")
         task_id = "uh_task_" + secrets.token_hex(16)
         trace_id = tracing.new_trace_id()
         event_buffer: list[dict[str, Any]] = []
@@ -101,11 +105,12 @@ class TaskManager:
             "trace_id": trace_id,
             "seq": 0,
             "mode": mode,
+            "task_type": decision.task_type,
             "context": dict(context or {}),
             "owner_client_id": owner_client_id or session_id,
             "owner_token": owner_token,
         }
-        self.tasks[task_id]["_runner"] = asyncio.create_task(self._run(task_id, session_id, content, mode, dict(context or {})))
+        self.tasks[task_id]["_runner"] = asyncio.create_task(self._run(task_id, session_id, content, decision, dict(context or {})))
         return task_id, trace_id
 
     def create_tool_task(
@@ -212,7 +217,7 @@ class TaskManager:
         closed = {e["event"]["payload"].get("step_id") for e in task["event_buffer"] if e["event"]["event"] in {"step.finished", "step.failed"}}
         for sid, payload in started.items():
             if sid and sid not in closed:
-                await self._emit(task, "step.failed", {"step_id": sid, "module": payload.get("module", "llm"), "error": {"code": "UH-KRN-5001", "message": "任务取消，步骤未闭合", "retryable": False}})
+                await self._emit(task, "step.failed", {"step_id": sid, "module": payload.get("module", "llm"), "error": {"code": "UH-KRN-5001", "message": "任务取消，步骤未闭合", "retryable": False}}, audit_fields={"cancelled": True})
         await self._emit(task, "task.cancelled", {"reason": reason, "completed_steps": completed})
         return {"task_id": task_id, "reason": reason, "completed_steps": completed}
 
@@ -276,14 +281,10 @@ class TaskManager:
             await self.bus.publish(source.action, internal_payload, trace_id=source.trace_id, span_id=source.span_id)
         return mapped
 
-    async def _run(self, task_id: str, session_id: str, content: str, mode: str, context: dict[str, Any] | None = None) -> None:
+    async def _run(self, task_id: str, session_id: str, content: str, decision: RouteDecision, context: dict[str, Any] | None = None) -> None:
         t = self.tasks[task_id]
         q: asyncio.Queue = t["queue"]
         with tracing.request_context(t["trace_id"]):
-            try:
-                decision = classify(content, mode)
-            except ValueError:
-                decision = classify(content, "auto")
             context = context or {}
             memory_recall = bool(context.get("memory_recall", True))
             retrieval_context = ""

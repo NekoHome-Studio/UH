@@ -333,6 +333,10 @@ class LongTermMemory:
         return len(self.entries)
 
     @property
+    def vector_count(self) -> int:
+        return len(self.vector_store.documents)
+
+    @property
     def metric(self) -> int:
         return self.entry_count
 

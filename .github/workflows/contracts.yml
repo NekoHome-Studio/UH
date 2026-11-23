@@ -1,9 +1,9 @@
 name: contracts
 on:
   push:
-    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "Dockerfile", ".dockerignore", ".env.example", "docker-compose.yaml", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", "scripts/verify-compose-exposure.mjs", "scripts/secret-scan.mjs", ".github/workflows/contracts.yml"]
+    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "Dockerfile", ".dockerignore", ".env.example", "docker-compose.yaml", "deploy/observability/**", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", "scripts/verify-compose-exposure.mjs", "scripts/verify-metrics-cardinality.mjs", "scripts/secret-scan.mjs", ".github/workflows/contracts.yml"]
   pull_request:
-    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "Dockerfile", ".dockerignore", ".env.example", "docker-compose.yaml", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", "scripts/verify-compose-exposure.mjs", "scripts/secret-scan.mjs", ".github/workflows/contracts.yml"]
+    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "Dockerfile", ".dockerignore", ".env.example", "docker-compose.yaml", "deploy/observability/**", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", "scripts/verify-compose-exposure.mjs", "scripts/verify-metrics-cardinality.mjs", "scripts/secret-scan.mjs", ".github/workflows/contracts.yml"]
 jobs:
   validate:
     runs-on: ubuntu-latest

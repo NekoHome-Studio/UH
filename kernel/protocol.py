@@ -120,9 +120,10 @@ class StorageGuard:
 class CapabilityRegistry:
     """内部 RPC：能力模块注册 handler，内核按 action 调用，超时/不可用降级。"""
 
-    def __init__(self, bus: EventBus, guard: StorageGuard) -> None:
+    def __init__(self, bus: EventBus, guard: StorageGuard, *, observe_call: Callable[[str, bool], None] | None = None) -> None:
         self.bus = bus
         self.guard = guard
+        self._observe_call = observe_call
         self._handlers: dict[str, Callable[[Envelope], Awaitable[Envelope]]] = {}
         self._available: dict[str, bool] = {}
 
@@ -151,17 +152,27 @@ class CapabilityRegistry:
 
     async def call(self, action: str, payload: dict, trace_id: str = "", deadline_ms: int = 8000, from_: str = "kernel") -> Envelope:
         req = Envelope(action=action, payload=payload, trace_id=trace_id, from_=from_, to=action, deadline_ms=deadline_ms)
-        handler = self._handlers.get(action)
-        if handler is None or not self._available.get(action, False):
-            await self.bus.publish("capability.module.degraded", {"action": action, "reason": "unavailable"}, trace_id=trace_id)
-            return self._degraded(req, "module unavailable", code=module_error_code())  # 二审：不可用≠超时(5021)}
-        self.guard.authorize(action)  # 存储隔离生产校验点
         try:
-            resp = await asyncio.wait_for(handler(req), timeout=deadline_ms / 1000.0)
-            return resp
+            result = await self._call(req)
+        except Exception:
+            if self._observe_call is not None:
+                self._observe_call(action, True)
+            raise
+        if self._observe_call is not None:
+            self._observe_call(action, bool(result.payload.get("degraded")))
+        return result
+
+    async def _call(self, req: Envelope) -> Envelope:
+        handler = self._handlers.get(req.action)
+        if handler is None or not self._available.get(req.action, False):
+            await self.bus.publish("capability.module.degraded", {"action": req.action, "reason": "unavailable"}, trace_id=req.trace_id)
+            return self._degraded(req, "module unavailable", code=module_error_code())  # 二审：不可用≠超时(5021)}
+        self.guard.authorize(req.action)  # 存储隔离生产校验点
+        try:
+            return await asyncio.wait_for(handler(req), timeout=req.deadline_ms / 1000.0)
         except asyncio.TimeoutError:
-            await self.bus.publish("capability.module.degraded", {"action": action, "reason": "timeout"}, trace_id=trace_id)
+            await self.bus.publish("capability.module.degraded", {"action": req.action, "reason": "timeout"}, trace_id=req.trace_id)
             return self._degraded(req, "deadline exceeded")
         except Exception as e:
-            await self.bus.publish("capability.module.failed", {"action": action, "error": str(e)}, trace_id=trace_id)
+            await self.bus.publish("capability.module.failed", {"action": req.action, "error": str(e)}, trace_id=req.trace_id)
             return self._degraded(req, "module error: " + str(e), code=module_error_code(req.payload.get("error_mode")))

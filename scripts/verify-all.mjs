@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { verifyComposeExposure } from "./verify-compose-exposure.mjs";
 import { readK8sManifests, verifyK8sManifests } from "./verify-k8s-manifests.mjs";
+import { verifyMetricsCardinality } from "./verify-metrics-cardinality.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEPS = path.join(ROOT, ".work", "verify-deps");
 const FULL = process.argv.includes("--full");
@@ -132,6 +133,11 @@ try {
   check("J K8s 工作负载、RBAC 与 NetworkPolicy", errors.length === 0, errors.join("; ") || "7 traffic allowances, scoped scaler RBAC");
 } catch {
   check("J K8s 工作负载、RBAC 与 NetworkPolicy", false, "无法读取或校验 K8s YAML");
+}
+try {
+  check("K Prometheus 指标标签基数", true, verifyMetricsCardinality(ROOT));
+} catch (e) {
+  check("K Prometheus 指标标签基数", false, childError(e));
 }
 const failed = results.filter(r => !r.ok && !r.info);
 console.log(failed.length === 0 ? "VERIFY_ALL_PASSED (" + results.length + " checks" + (FULL ? ", full" : ", fast") + ")" : "VERIFY_FAILED=" + failed.length);

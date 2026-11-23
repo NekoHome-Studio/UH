@@ -1,0 +1,31 @@
+groups:
+  - name: uh-critical
+    rules:
+      - alert: HighErrorRate
+        expr: >-
+          rate(uh_capability_failures_total[5m]) /
+          (rate(uh_capability_invocations_total[5m]) > 0) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: UH! capability error rate above 10%
+          description: 'Capability module {{ $labels.module }} on {{ $labels.instance }} exceeded a 10% failure rate over five minutes.'
+
+      - alert: MemoryPressure
+        expr: uh_memory_short_term_keys > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: UH! short-term memory above 10,000 keys
+          description: 'The short-term memory store scraped by {{ $labels.instance }} has {{ $value }} active keys. Check Redis capacity and session expiration.'
+
+      - alert: PluginCrashLoop
+        expr: uh_plugins_crash_quarantined > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: UH! plugin quarantined after repeated crashes
+          description: '{{ $value }} plugin(s) on {{ $labels.instance }} are quarantined after at least three crashes. Check the plugin lifecycle logs.'

@@ -1,0 +1,33 @@
+# Overlay for docker-compose.yaml at the repository root.
+services:
+  uh-kernel:
+    networks:
+      default:
+        aliases: [kernel]
+
+  prometheus:
+    image: prom/prometheus:v3.13.5
+    volumes:
+      - ./deploy/observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alert-rules.yaml:/etc/prometheus/alert-rules.yaml:ro
+      - uh-prometheus-data:/prometheus
+    depends_on: [uh-kernel, alertmanager]
+
+  alertmanager:
+    image: prom/alertmanager:v0.35.0
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --cluster.listen-address=
+    volumes:
+      - ./deploy/observability/alertmanager.yaml:/etc/alertmanager/alertmanager.yml:ro
+      - uh-alertmanager-data:/alertmanager
+    secrets: [uh_alertmanager_webhook]
+
+volumes:
+  uh-prometheus-data:
+  uh-alertmanager-data:
+
+secrets:
+  uh_alertmanager_webhook:
+    environment: UH_ALERTMANAGER_WEBHOOK_URL

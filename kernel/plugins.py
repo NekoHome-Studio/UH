@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import total_ordering
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlparse
 
 import yaml
@@ -670,11 +670,13 @@ class PluginDriver:
         loaders: Mapping[str, PluginLoader] | None = None,
         sandbox_runner: Any = None,
         capability_registry: Any = None,
+        observe_crash: Callable[[], None] | None = None,
     ) -> None:
         self.root = Path(root or os.environ.get(PLUGIN_ROOT_ENV, DEFAULT_PLUGIN_ROOT))
         self.registry_path = Path(registry_path or os.environ.get(PLUGIN_REGISTRY_ENV, DEFAULT_PLUGIN_REGISTRY))
         self.security = security or PluginSecurityConfig.from_env()
         self.records: dict[str, PluginRecord] = {}
+        self._observe_crash = observe_crash
         self._restore_pending: set[str] = set()
         self._lifecycle_lock = asyncio.Lock()
         default_loader: PluginLoader = NoopPluginLoader()
@@ -703,6 +705,8 @@ class PluginDriver:
         if record is None or record.status != "active":
             return False
         record.crash_count += 1
+        if self._observe_crash is not None:
+            self._observe_crash()
         record.updated_at = _now()
         if record.crash_count >= 3:
             record.status = "quarantined"
