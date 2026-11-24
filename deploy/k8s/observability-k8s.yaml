@@ -1,0 +1,58 @@
+# M3-3/M3-4 K8s 侧可观测性（二轮复检阻断②）：Prometheus 抓取 + OTel Collector 放行
+apiVersion: v1
+kind: Service
+metadata: { name: uh-kernel-metrics, namespace: uh-prod, labels: { app: uh-kernel } }
+spec:
+  selector: { app: uh-kernel }
+  ports: [{ name: metrics, port: 9090, targetPort: 8080 }]
+---
+# Prometheus ServiceMonitor 需 prometheus-operator；无 operator 时用下方 annotations
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: uh-prod
+  labels: { app: otel-collector }
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+---
+# OTel Collector Deployment（最小版，OTLP 收 → 日志落盘 + 指标透传）
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: otel-collector, namespace: uh-prod, labels: { app: otel-collector } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: otel-collector } }
+  template:
+    metadata: { labels: { app: otel-collector } }
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:latest
+          ports: [{ containerPort: 4317 }, { containerPort: 4318 }]
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts: [{ name: config, mountPath: /etc/otelcol-contrib/config.yaml, subPath: config.yaml }]
+      volumes:
+        - name: config
+          configMap: { name: otel-collector-config }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: otel-collector-config, namespace: uh-prod }
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols: { grpc: { endpoint: 0.0.0.0:4317 }, http: { endpoint: 0.0.0.0:4318 } }
+    processors:
+      batch: {}
+    exporters:
+      logging: { loglevel: warn }
+    service:
+      pipelines:
+        traces: { receivers: [otlp], processors: [batch], exporters: [logging] }

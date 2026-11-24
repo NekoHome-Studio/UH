@@ -133,3 +133,38 @@ spec:
         # Replace the documentation-only address with approved external LLM endpoint IPs.
         - ipBlock: { cidr: 192.0.2.1/32 }
       ports: [{ port: 443 }]
+---
+# 二轮复检阻断①：uh-scaler 经内核 Pod 访问 kube-apiserver（deployments/scale 子资源）。
+# 部署时把 cidr 替换为集群实际控制面地址（kubectl get endpoints kubernetes -n default）。
+# 默认值 192.0.2.10/32 是 RFC5737 文档保留地址，必须替换后才生效。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: kernel-egress-apiserver, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-kernel } }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: 192.0.2.10/32 }
+      ports: [{ port: 443 }]
+---
+# 二轮复检阻断②：内核 → OTel collector（OTLP gRPC/HTTP）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: kernel-egress-otel, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: uh-kernel } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app: otel-collector } } }]
+      ports: [{ port: 4317 }, { port: 4318 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: otel-collector-ingress, namespace: uh-prod }
+spec:
+  podSelector: { matchLabels: { app: otel-collector } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: uh-kernel } } }]
+      ports: [{ port: 4317 }, { port: 4318 }]

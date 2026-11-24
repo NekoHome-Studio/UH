@@ -79,3 +79,38 @@ kubectl get clusterrolebindings,rolebindings -A -o json |
 ```
 
 直接绑定查询应只返回 `uh-prod/uh-crewai-scaler` 的 RoleBinding。权限列表中与工作负载相关的条目应只有 CrewAI 的两个授权规则。若集群向 ServiceAccount 组授予其他权限，应一并审计这些组绑定。 [kubectl auth can-i](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_auth/kubectl_auth_can-i/)
+
+
+## apiserver-egress（二轮复检阻断①修复）
+
+`uh-scaler` 经内核 Pod 调 `deployments/scale`，需要 Egress 到 kube-apiserver。
+`networkpolicies.yaml` 的 `kernel-egress-apiserver` 已预留规则，但 **cidr 是文档占位地址 `192.0.2.10/32`，部署前必须替换**：
+
+```bash
+# 取实际控制面地址
+kubectl get endpoints kubernetes -n default -o jsonpath='{.subsets[0].addresses[0].ip}'
+# 替换后 apply
+sed -i 's|192.0.2.10/32|<REAL_APISERVER_IP>/32|' deploy/k8s/networkpolicies.yaml
+kubectl apply -f deploy/k8s/networkpolicies.yaml
+```
+
+同时需在集群侧启用 **ServiceAccount token 自动挂载**（默认开启）并提供 CA：
+内核容器已读 `/var/run/secrets/kubernetes.io/serviceaccount/`，`UH_K8S_API_HOST` 默认取 `KUBERNETES_SERVICE_HOST`。
+
+未替换 cidr 时 scaler 调用会超时 → 协作降级为普通对话（`collaboration.worker.degraded`），**不会崩主链路**。
+
+## 可观测性 K8s 落地（阻断②修复）
+
+`deploy/k8s/observability-k8s.yaml` 提供：
+- `uh-kernel-metrics` Service（Prometheus 抓取入口，9090→8080）
+- `otel-collector` Deployment + Service（4317 gRPC / 4318 HTTP）
+- `otel-collector-config` ConfigMap（OTLP → logging exporter，生产替换为 Jaeger/Tempo）
+- NetworkPolicy 放行 kernel→collector 4317/4318
+
+内核 Pod 已注入 `UH_OTEL_ENABLED=1` + `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317` + `UH_OTEL_SAMPLE_RATIO=0.1`。
+
+## cgroup 委派（阻断③修复）
+
+内核 Pod 挂载 `cgroup: { path: uh-plugins, resources: { limits: { pids: 64 } } }` 到 `/sys/fs/cgroup/uh-plugins`，
+并通过 `UH_SANDBOX_CGROUP_ROOT` 告知 PluginCgroup。**需节点启用 cgroup v2 + 内核 5.10+**；
+未委派时 PluginCgroup 记 `plugin.sandbox.cgroup_unconfigured` 告警并回退 `ulimit -v`（仅内存，无 pids 防护）。

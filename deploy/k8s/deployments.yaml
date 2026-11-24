@@ -71,13 +71,24 @@ spec:
             - { name: UH_PLUGIN_TRUSTED_KEYS_FILE, value: /run/secrets/uh_plugin_trusted_keys }
             - { name: UH_PLUGIN_ROOT, value: /app/.uh/plugins }
             - { name: UH_SANDBOX_OCI_STRICT, value: "1" }
+            # 二轮复检阻断③：注入委派 cgroup root，否则 PluginCgroup 不可用、
+            # pids.max 防 fork 炸弹落空（仅剩 ulimit -v 内存限制）。
+            - { name: UH_SANDBOX_CGROUP_ROOT, value: /sys/fs/cgroup/uh-plugins }
+            # 二轮复检阻断②：OTel 指向同 ns 的 collector（netpol 已放行 4317/4318）
+            - { name: UH_OTEL_ENABLED, value: "1" }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector:4317" }
+            - { name: UH_OTEL_SAMPLE_RATIO, value: "0.1" }
           volumeMounts:
             - { name: runtime, mountPath: /run/secrets, readOnly: true }
             - { name: tmp, mountPath: /tmp }
             - { name: state, mountPath: /app/.uh }
+            # 阻断③配套：委派 cgroup v2 子树需可写挂载
+            - { name: cgroup, mountPath: /sys/fs/cgroup/uh-plugins }
       volumes:
         - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 128Mi } }
         - { name: state, emptyDir: {} }
+        - name: cgroup
+          cgroup: { path: uh-plugins, resources: { limits: { pids: 64 } } }
         - name: runtime
           secret:
             secretName: uh-runtime

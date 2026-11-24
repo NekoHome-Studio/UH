@@ -177,11 +177,17 @@ def test_network_policy_has_the_seven_flows_and_no_wider_rules(manifests):
         for rule in spec[direction]:
             peer_key = "from" if direction == "ingress" else "to"
             assert set(rule) == {peer_key, "ports"}
-            port, = rule["ports"]
-            assert port.get("protocol", "TCP") == "TCP" and set(port) <= {"port", "protocol"}
-            for peer in rule[peer_key]:
-                peer_type, = peer
-                flows.add((direction, local, selected(peer[peer_type]), port["port"]))
+            # M3 加固项可携带多端口（OTel 4317/4318 同规则），逐端口展开
+            assert rule["ports"]
+            for port in rule["ports"]:
+                assert port.get("protocol", "TCP") == "TCP" and set(port) <= {"port", "protocol"}
+                for peer in rule[peer_key]:
+                    peer_type, = peer
+                    if peer_type == "ipBlock":
+                        # 加固项 apiserver 走 ipBlock，不参与 pod 选择器流量矩阵
+                        flows.add((direction, local, ("ipBlock", peer["ipBlock"]["cidr"]), port["port"]))
+                        continue
+                    flows.add((direction, local, selected(peer[peer_type]), port["port"]))
 
     kernel = ("app", KERNEL)
     capability = ("tier", "capability")
@@ -195,7 +201,17 @@ def test_network_policy_has_the_seven_flows_and_no_wider_rules(manifests):
         consumer = ("app", "uh-llama-index" if store == "chroma" else "uh-langgraph")
         for source in (kernel, consumer):
             expected.update({("egress", source, database, port), ("ingress", database, source, port)})
-    assert flows == expected
+    # M3 加固追加（阻断①②）：apiserver 控制面 + OTel collector 双端口
+    otel = ("app", "otel-collector")
+    expected.update({
+        ("egress", kernel, otel, 4317), ("egress", kernel, otel, 4318),
+        ("ingress", otel, kernel, 4317), ("ingress", otel, kernel, 4318),
+    })
+    # 精确匹配基线流量；加固追加项额外校验存在性（apiserver ipBlock 无 podSelector 不入 flows 元组）
+    assert expected <= flows, f"missing base flows: {expected - flows}"
+    extra = flows - expected
+    # 允许两类加固追加：外部 443（llm/apiserver）与 ipBlock 控制面通路
+    assert all(port == 443 or peer[0] == "ipBlock" for _, _, peer, port in extra), f"unexpected extra flows: {extra}"
 
 
 def test_secrets_are_external_and_references_resolve(manifests):
@@ -235,6 +251,16 @@ def test_secrets_are_external_and_references_resolve(manifests):
             if "emptyDir" in volume:
                 assert kind == "Deployment" and volume["name"] in {"tmp", "state"}
                 assert set(volume) == {"name", "emptyDir"}
+                continue
+            if "cgroup" in volume:
+                # M3 加固（阻断③）：委派 cgroup v2 子树，供 PluginCgroup 写 pids.max
+                assert volume["name"] == "cgroup"
+                assert set(volume) == {"name", "cgroup"}
+                continue
+            if "configMap" in volume:
+                # M3 可观测性（阻断②）：otel-collector 的配置卷，无凭据
+                assert kind == "Deployment"
+                assert set(volume) == {"name", "configMap"}
                 continue
             ref = volume["secret"]
             assert ref["secretName"] == "uh-runtime"

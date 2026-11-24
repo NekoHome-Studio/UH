@@ -20,6 +20,10 @@ _WORKER_SECONDS = 120
 COLLABORATION_DEADLINE_MS = (_STARTUP_SECONDS + _WORKER_SECONDS + 5) * 1000
 _LEASE_SECONDS = 180  # Longer than the entire bounded capability call.
 _LOCK = "uh:collaboration:transition"
+_RELEASE_SECONDS = 40.0
+_RELEASE_ATTEMPTS = 3
+# 锁 TTL 须大于单次释放上限(40s)+重试退避，否则过期后他人可并发缩容（双重删除）
+_LOCK_TTL_SECONDS = 90
 _ACTIVE = "uh:collaboration:active"
 _STATE = "uh:collaboration:worker"
 _LOG = get_logger(__name__)
@@ -157,7 +161,7 @@ class CollaborationManager:
         # Its expiry exceeds either bounded scale call plus Redis bookkeeping.
         owner = secrets.token_hex(16)
         try:
-            while not await self.redis.set(_LOCK, owner, nx=True, ex=45):
+            while not await self.redis.set(_LOCK, owner, nx=True, ex=_LOCK_TTL_SECONDS):
                 await asyncio.sleep(0.05)
             yield
         finally:
@@ -206,8 +210,11 @@ class CollaborationManager:
             return result, result.status == "ok"
 
     async def _release(self, lease: str | None, trace_id: str = "", task_id: str | None = None) -> None:
+        # 二轮复检阻断④：scale(0) 失败须重试，否则副本永久停在 1；
+        # 锁 TTL 提到 90s（> 单次释放 40s 上限 + 重试窗口），消除双重删除竞态。
+        last: ScaleResult | None = None
         try:
-            async with asyncio.timeout(40), self._transition():
+            async with asyncio.timeout(_RELEASE_SECONDS), self._transition():
                 if lease is not None:
                     await self.redis.zrem(_ACTIVE, lease)
                 await self._prune_leases()
@@ -219,17 +226,24 @@ class CollaborationManager:
                 trace_id = trace_id or state["trace_id"]
                 task_id = task_id or state["task_id"] or None
                 await self.redis.hset(_STATE, "ready", "0")
-                result = await self.scaler.scale(_TARGET, 0, trace_id=trace_id)
-                if result.status == "ok":
-                    await self.redis.delete(_STATE)
+                for attempt in range(_RELEASE_ATTEMPTS):
+                    last = await self.scaler.scale(_TARGET, 0, trace_id=trace_id)
+                    if last.status == "ok":
+                        # 只有确认缩容成功才清状态；否则保留供 reconciler 下轮重试
+                        await self.redis.delete(_STATE)
+                        break
+                    if attempt + 1 < _RELEASE_ATTEMPTS:
+                        await asyncio.sleep(0.5 * (attempt + 1))
         except (TimeoutError, RedisError) as exc:
             reason = "timeout" if isinstance(exc, TimeoutError) else "coordination_unavailable"
             await self._event("degraded", trace_id, task_id, reason=reason, phase="shutdown")
             return
-        if result.status == "ok":
+        if last is not None and last.status == "ok":
             await self._event("scaled_down", trace_id, task_id, replicas=0)
         else:
-            await self._event("degraded", trace_id, task_id, reason=result.reason, phase="shutdown")
+            # 重试耗尽仍失败：保留 _STATE，reconciler 每 10s 会再试
+            await self._event("degraded", trace_id, task_id,
+                              reason=(last.reason if last is not None else "no_attempt"), phase="shutdown")
 
     async def _reconcile_idle(self) -> None:
         while True:

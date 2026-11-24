@@ -21,18 +21,19 @@ const workloads = [KERNEL, ...capabilities];
 const resources = {
   Namespace: ["v1", [NAMESPACE]],
   Secret: ["v1", ["uh-runtime"]],
+  ConfigMap: ["v1", ["otel-collector-config"]],
   ServiceAccount: ["v1", [SCALER]],
   Role: [RBAC + "/v1", [ROLE]],
   RoleBinding: [RBAC + "/v1", [ROLE]],
-  Deployment: ["apps/v1", workloads],
+  Deployment: ["apps/v1", [...workloads, "otel-collector"]],
   HorizontalPodAutoscaler: ["autoscaling/v2", capabilities],
   StatefulSet: ["apps/v1", Object.keys(stores)],
-  Service: ["v1", [...workloads, ...Object.keys(stores)]],
+  Service: ["v1", [...workloads, ...Object.keys(stores), "otel-collector", "uh-kernel-metrics"]],
   NetworkPolicy: ["networking.k8s.io/v1", [
     "default-deny", "allow-dns", "kernel-ingress", "capability-ingress-from-kernel",
     "kernel-egress-capabilities", "kernel-egress-datastores", "capability-egress-datastores",
     "capability-egress-datastores-llama-index", "redis-ingress", "chroma-ingress", "postgres-ingress",
-    "llm-egress",
+    "llm-egress", "kernel-egress-apiserver", "kernel-egress-otel", "otel-collector-ingress",
   ]],
 };
 
@@ -89,6 +90,13 @@ function checkNetwork(get, check) {
     "llm-egress": egress({
       podSelector: { matchExpressions: [{ key: "app", operator: "In", values: [KERNEL, CREWAI] }] },
     }, { to: llmPeers, ports: [{ port: 443 }] }),
+    // 二轮复检阻断①②：apiserver 控制面 + OTel collector
+    "kernel-egress-apiserver": egress(app(KERNEL),
+      { to: [{ ipBlock: { cidr: "192.0.2.10/32" } }], ports: [{ port: 443 }] }),
+    "kernel-egress-otel": egress(app(KERNEL),
+      { to: [app("otel-collector")], ports: [{ port: 4317 }, { port: 4318 }] }),
+    "otel-collector-ingress": ingress(app("otel-collector"),
+      { from: [app(KERNEL)], ports: [{ port: 4317 }, { port: 4318 }] }),
   };
   for (const [name, spec] of Object.entries(expected)) {
     check(equal(get(name), spec), `NetworkPolicy ${name} differs from the required traffic rules`);
