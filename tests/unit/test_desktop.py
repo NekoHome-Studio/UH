@@ -129,3 +129,28 @@ assert.deepEqual(calls, [
     ['running', null], ['idle', 'failed'], ['running', null], ['idle', null],
 ]);
 """)
+
+
+def test_tauri2_ipc_api_shape():
+    """Tauri 2 的全局 API 是 window.__TAURI__.core.invoke（官方 v2 文档）。
+
+    该测试防止误改为 v1 的 window.__TAURI__.invoke / tauri.invoke 写法。
+    参考：https://v2.tauri.app/develop/calling-rust/
+    """
+    source = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+    assert "window.__TAURI__?.core" in source or "window.__TAURI__.core" in source, \
+        "Tauri 2 必须经 __TAURI__.core 取 invoke"
+    assert "core.invoke('report_task_state'" in source
+    # 禁止 v1 写法
+    assert "window.__TAURI__.invoke(" not in source
+    assert "window.tauri.invoke(" not in source
+    # 配置要求：withGlobalTauri 必须开启，否则全局不注入
+    config = json.loads((ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
+    assert config["app"]["withGlobalTauri"] is True
+    # 远程回环 UI 需在 capabilities 中显式放行，否则 IPC 被拒
+    cap = json.loads((ROOT / "desktop" / "src-tauri" / "capabilities" / "desktop.json").read_text(encoding="utf-8"))
+    assert "http://127.0.0.1:8080/*" in cap["remote"]["urls"]
+    assert "allow-report-task-state" in cap["permissions"]
+    # Rust 侧命令必须注册
+    rust = (ROOT / "desktop" / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+    assert "generate_handler![report_task_state]" in rust
