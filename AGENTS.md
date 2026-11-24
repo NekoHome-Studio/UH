@@ -10,10 +10,13 @@
 
 ## 2. 当前状态（随进度更新）
 - MS-0 契约冻结：tag contract-v0.1.0，#1~#6 关闭；契约状态头已回写 frozen。
-- M0 骨架期完成（#7~#12）；M1 能力期完成（#13~#21，9/9）；M2 插件期**已结项**（#22~#27 关闭，MS-3 closed，tag m2-v0.1.0）：插件驱动/最小沙箱/工具 SDK+3 官方工具/主题 CSS 契约/钩子+审计/插件 CLI。
+- M0 骨架期完成（#7~#12，6/6）；M1 能力期完成（#13~#21，9/9）；M2 插件期**已结项**（#22~#27，tag m2-v0.1.0 + Release）。
+- **M3 生产期 8/9**（#28~#35 已关闭）：Compose 编排 · K8s + 最小 RBAC · Prometheus 指标告警 · OpenTelemetry · CrewAI 按需启停 · Desktop(Tauri 2) · 系统级安全加固 · L2 加密+日志脱敏+供应链 SBOM。**#36 压测 100 并发 + SLO 待做**（M3 最后一项）。
 - 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0 / m1-review-fixed-v0.1.0 / m1-review2-fixed-v0.1.0/ m2-v0.1.0。
-- M1 一~五审 + M2 独立验收/复检（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；265 测试 + verify-all full 8/8（含 secret 扫描）；详见 docs/reviews/。
-- 当前：**MS-3 已结项**（八轮独立验证，265 测试双端 full 8/8，修 DeepSeek F1-F13 + 19 绕过样本）→ 下一步 **M3 生产期（#28 Compose 起）**，含 SBX Linux/macOS 补证、AST 污点分析、SBX-04 Job 总量、TLS+WS 短时票据、per-user principal。
+- M1 一~五审 + M2 独立验收/复检（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；379 测试 + verify-all full **14 项**（含 secret 扫描）；详见 docs/reviews/。
+- 当前（基线 b8b2a38）：**M3 中期深审 4 生产阻断已全修**（apiserver Egress / K8s observability / cgroup 委派 / 协作释放重试）；**SBX-07~09 已在 Kylin Linux 实机取证**（bwrap，6 passed）。
+- 下一步：**#36 压测 100 并发 + SLO + 成本分层** → MS-4 结项 → R-1 全量回归 / R-2 文档 CHANGELOG / R-3 发布包 → v0.1.0。
+- 登记项（不阻断）：per-user principal、L2 主密钥轮换、AST 污点分析替代静态黑名单、TLS+WS 短时票据、macOS SBX 矩阵（无主机）、Compose/K8s 真环境实跑。
 - 实时进度以 PROGRESS.md 为准；任务编号映射见 uh-issues/issue-map.csv（#1~#39）。
 
 ## 3. 事实源与阅读顺序

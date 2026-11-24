@@ -271,8 +271,20 @@
 - 结项基线 c791974：本机 265/265 + full 8/8 + secret rc=0，服务器 265/265，双端 21 文件哈希全 SAME。
 - 八轮验证累计修 DeepSeek F1-F13 + 19 绕过样本，test_review6_fixes 53 例。
 
+### 2026-11-24 · M3 完成八项（#28~#35 结项）
+
+- #28 Compose 编排（I 项）· #29 K8s + 最小 RBAC（J 项）· #30 指标告警（K 项）· #31 OTel
+- #32 CrewAI 按需启停（Redis 分布式租约）· #33 Desktop Tauri 2（L 项）· #34 安全加固（M 项，SBX-07~09 Kylin 实机过）· #35 加密脱敏供应链（N 项，DSH 直写）
+- M3 中期深审（Hunyuan）4 生产阻断全修：apiserver Egress / K8s observability / cgroup 委派 / 协作释放重试
+- Tauri IPC 疑点核实为误报（core.invoke 是 v2 官方写法），加断言锁死
+- 门禁：**379 passed + 15 skipped**，verify-all **14 项 A~N**，secret 320 文件 0 命中，服务器同步 379
+- 服务器补齐 M3 全量部署（metrics/otel/collaboration/scaler/deploy 清单/desktop/scripts）
+
 ## 下一步
 
-**M3 生产期（#28~#36）**（用户暂缓）：DSH 审 6 任务卡 → GitHub 关闭 #22~#27 + tag m2-v0.1.0 → M3 生产期（#28 Compose 起）。
+**M3 剩余：** #36 压测 100 并发 + SLO + 成本分层（需真环境实跑，脚本可先写）→ MS-4 结项
+**发布（MS-5）：** R-1 全量回归 / R-2 文档 CHANGELOG / R-3 发布包 → v0.1.0
+
+**历史下一步（已完成）：**（用户暂缓）：DSH 审 6 任务卡 → GitHub 关闭 #22~#27 + tag m2-v0.1.0 → M3 生产期（#28 Compose 起）。
 M3 含登记项：SBX Linux/macOS 平台矩阵证据（无主机）、R-4~R-8 加固（审计自报覆盖/ProcessPluginLoader 收尾/no_verify 暴露面）、生产化收敛（dev 生产关/TLS+WS 短时票据/per-user principal/delta 合批/主题 REST OpenAPI 登记/web-search 真实代理）。
 交接见 [交接文档](docs/runbooks/交接文档.md) + [环境状态总览](docs/runbooks/环境状态总览.md)。
