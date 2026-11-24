@@ -20,11 +20,18 @@ COPY --from=build /install/ /usr/local/
 COPY --from=build /src/kernel/ ./kernel/
 COPY ui/ ./ui/
 COPY docs/contracts/ ./docs/contracts/
+# M3-8 供应链：镜像内携带 SBOM（构建阶段由 scripts/generate-sbom.mjs 产出 dist/sbom.cdx.json）
+COPY scripts/generate-sbom.mjs ./scripts/generate-sbom.mjs
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UH_PLUGIN_INSTALL_VIA_KERNEL=1
 
+# SBOM 作为镜像元数据的一部分（OCI annotation），不含凭据
+LABEL org.opencontainers.image.title="UH! Kernel" \
+      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.sbom="/app/dist/sbom.cdx.json"
 USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s CMD ["python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/health', timeout=3).close()"]

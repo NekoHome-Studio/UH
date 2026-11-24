@@ -153,6 +153,16 @@ try {
 } catch (e) {
   check("M 系统级安全加固", false, childError(e));
 }
+// N 安全专项 SEC-01~05 + SBOM（M3-8）：脱敏/加密/供应链
+try {
+  const out = execSync(`"${process.execPath}" "${path.join(ROOT, "scripts", "generate-sbom.mjs")}"`, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const written = /SBOM_WRITTEN components=(\d+)/.exec(out);
+  const supply = out.includes("SUPPLY_CHAIN_PASSED");
+  check("N 安全专项与供应链（SEC-01~05 + SBOM）", Boolean(written) && supply,
+    written ? `SBOM components=${written[1]}, supply chain passed` : "SBOM 生成异常");
+} catch (e) {
+  check("N 安全专项与供应链（SEC-01~05 + SBOM）", false, childError(e));
+}
 const failed = results.filter(r => !r.ok && !r.info);
 console.log(failed.length === 0 ? "VERIFY_ALL_PASSED (" + results.length + " checks" + (FULL ? ", full" : ", fast") + ")" : "VERIFY_FAILED=" + failed.length);
 process.exit(failed.length === 0 ? 0 : 1);

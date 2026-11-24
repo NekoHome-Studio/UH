@@ -32,7 +32,9 @@ class JsonFormatter(logging.Formatter):
         }
         fields = getattr(record, "fields", None)
         if isinstance(fields, dict):
-            payload.update(fields)
+            # M3-8 §9.9：日志脱敏（凭据→*REDACTED*，正文裁剪）；trace_id/span_id 保留供排查
+            from .redaction import redact_fields
+            payload.update(redact_fields(fields))
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)
