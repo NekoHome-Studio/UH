@@ -33,14 +33,6 @@ _VALUE_PATTERNS = (
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     # 通用 key=value 形式（query / cli）
     re.compile(r"(?i)\b(?:password|passwd|token|api[_-]?key|secret|access[_-]?key)=\S+"),
-    # 独立审查补充：已知厂商前缀的短凭据。熵检测要求 ≥24 字符，
-    # sk-xxx / ghp_xxx 这类短 token 会漏出（实测 sk-abc123 不脱敏）。
-    # 前缀本身即强信号，不依赖长度与熵。
-    re.compile(r"\b(?:sk|pk|rk)-(?:live-|test-|proj-)?[A-Za-z0-9_-]{6,}\b"),
-    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{6,}\b"),
-    re.compile(r"\bglpat-[A-Za-z0-9_-]{6,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{6,}\b"),
-    re.compile(r"\bAIza[A-Za-z0-9_-]{10,}\b"),
 )
 
 # 记忆正文 / 工具返回裁剪阈值
