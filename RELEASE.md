@@ -80,6 +80,7 @@
 - **Compose / K8s 真环境实跑未验证**（清单与静态门禁齐备，缺 Docker / 集群）
 - **Desktop 二进制未编译**（源码配置齐备，见 `desktop/README.md` 构建步骤）
 - **macOS 沙箱矩阵未采证**（无主机）
+- **K8s 多副本需客户端亲和**：任务状态与幂等缓存仍进程内，Service 已配 `sessionAffinity: ClientIP` 止血；经 ingress 时源 IP 改写会使亲和失效，需改用 cookie 亲和。根治待 v0.2.0 状态外置
 - **单用户假设**：当前单共享 token，per-user principal 待 v0.2.0
 - **L2 主密钥轮换未实现**
 - **静态扫描是审查辅助不是安全边界**；真实边界为签名信任 + 沙箱运行时

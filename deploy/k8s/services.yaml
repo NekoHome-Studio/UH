@@ -1,8 +1,23 @@
 apiVersion: v1
 kind: Service
-metadata: { name: uh-kernel, namespace: uh-prod }
+metadata:
+  name: uh-kernel
+  namespace: uh-prod
+  annotations:
+    uh.io/session-affinity-rationale: >-
+      R2 审查 P0-3：任务对象（含 asyncio.Queue）与幂等缓存仍是进程内状态，
+      replicas>=2 且无亲和时，任务轮询/SSE/WS 有约 50% 概率落到未持有该任务的
+      worker 而返回 404，同一 Idempotency-Key 也会在不同 worker 各建一个任务。
+      ClientIP 亲和是**权宜止血**，非最终方案；根治需任务状态外置（Redis）
+      与独立执行进程池，见 docs/deployment/multiprocess.md。
 spec:
   type: ClusterIP
+  # 权宜：保证同一客户端的任务创建与后续查询落到同一 worker。
+  # 注意：经 ingress/网关时源 IP 可能被改写，此时亲和失效——
+  # 该形态下应改用 ingress 层的 cookie 亲和或等待状态外置。
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP: { timeoutSeconds: 10800 }
   selector: { app: uh-kernel, tier: kernel }
   ports: [{ name: http, port: 8080, targetPort: http }]
 ---

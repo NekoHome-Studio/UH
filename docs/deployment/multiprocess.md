@@ -97,3 +97,45 @@ mock LLM 流式 = 312ms（53 字符 × 5ms + 开销）
 - ✅ **错误率 <1% 达标**（三场景 0%，且稳定）
 - ❌ **P95 ≤2000ms 未达标**（5.6s，但从 55.8s 改善 **10 倍**）
 - 剩余 5.5s 延迟源未定位，是下一步唯一攻坚点
+
+
+---
+
+## 8. K8s 多副本的客户端亲和（R2 审查 P0-3）
+
+### 问题
+`deploy/k8s/deployments.yaml` 的 `uh-kernel` 是 **replicas: 2**，而任务对象
+（含 `asyncio.Queue`）与 `idempotency_cache` **仍是进程内状态**。
+Service 若无亲和，请求随机落 worker：
+
+| 操作 | 落到未持有任务的 worker |
+|---|---|
+| `GET /tasks/{id}` | **404** |
+| `GET /tasks/{id}/steps` | **404** |
+| SSE / WS 订阅 | 拿不到事件 |
+| 同 `Idempotency-Key` 重放 | **各建一个任务**（幂等失效） |
+
+双 app 实例实测确认：A 创建任务后 B 查询返回 404。约 **50% 概率**。
+
+### 短期止血（已实施）
+`uh-kernel` Service 加：
+```yaml
+sessionAffinity: ClientIP
+sessionAffinityConfig:
+  clientIP: { timeoutSeconds: 10800 }
+```
+并新增 J 项断言：**replicas ≥ 2 时必须有 ClientIP 亲和**，去掉即门禁 FAIL。
+
+### 这是权宜，不是根治
+- **经 ingress/网关时源 IP 会被改写**，ClientIP 亲和随之失效。
+  该形态下需改用 ingress 层 cookie 亲和（如 nginx `affinity: cookie`）。
+- 亲和只保证「同一客户端」落同一 worker；**客户端换 IP、Pod 重启、滚动更新**仍会丢任务。
+- 长期记忆文件后端多进程写为 **last-write-wins**（非 append-only），并发写会丢数据。
+
+### 根治路径（v0.2.0）
+1. 任务记录外置 Redis（状态、步骤、事件流）
+2. 事件经 pub/sub 回流，任意 worker 可订阅
+3. 幂等缓存外置 Redis
+4. 独立执行进程池，提交与执行解耦
+
+**在此之前，不应把该清单宣称为「生产可用」**——它需要亲和配置且仍有上述边界。

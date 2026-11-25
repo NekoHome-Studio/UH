@@ -217,6 +217,12 @@ export function verifyK8sManifests(documents) {
       check(Number.isInteger(spec?.replicas) && spec.replicas >= 2
         && podSpec?.serviceAccountName === SCALER && podSpec?.automountServiceAccountToken !== false,
       "kernel requires at least two replicas and the uh-scaler ServiceAccount");
+      // R2 审查 P0-3：任务状态与幂等缓存仍进程内，多副本必须靠客户端亲和
+      // 保证创建与查询落同一 worker，否则约 50% 请求 404、幂等失效。
+      // 状态外置完成前，此约束是「生产可用」的前提而非可选项。
+      check(spec.replicas < 2 || (service?.sessionAffinity === "ClientIP"
+        && Number(service?.sessionAffinityConfig?.clientIP?.timeoutSeconds) > 0),
+      "kernel Service must pin clients (sessionAffinity: ClientIP) while task state is process-local");
     } else {
       check(podSpec?.automountServiceAccountToken === false
         && (podSpec?.serviceAccountName ?? "default") === "default", `${name} must not use scaler credentials`);
