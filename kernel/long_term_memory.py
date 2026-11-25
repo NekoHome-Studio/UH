@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -341,10 +342,18 @@ class LongTermMemory:
         return self.entry_count
 
     async def awrite(self, *args: Any, **kwargs: Any) -> LongTermEntry | None:
-        return self.write(*args, **kwargs)
+        """真异步写入。
+
+        R2 审查 P0-2：原实现 `return self.write(...)` 只是协程壳，同步体
+        （embedding + AES-GCM + 写盘，实测 ~84ms）仍在事件循环内执行。
+        调用方按 `inspect.iscoroutinefunction` 判定会直接 await，
+        使 to_thread 卸载分支永不触发——100 并发下 P95 劣化到 33s。
+        """
+        return await asyncio.to_thread(self.write, *args, **kwargs)
 
     async def arecall(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-        return self.recall(*args, **kwargs)
+        """真异步召回（同 P0-2：原协程壳阻塞事件循环 ~19ms/次）。"""
+        return await asyncio.to_thread(self.recall, *args, **kwargs)
 
 
 def create_long_term_memory(guard: Any = None) -> LongTermMemory:
