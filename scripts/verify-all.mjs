@@ -91,6 +91,28 @@ const expected = [["post","/sessions"],["get","/sessions/{id}"],["get","/session
 const missing = expected.filter(([m, p]) => !(oapi.paths[p] && oapi.paths[p][m]));
 check("D OpenAPI 端点覆盖（19/19）", missing.length === 0, missing.length ? JSON.stringify(missing) : Object.keys(oapi.paths).length + " 路径");
 
+// D2. 契约 → 实现真实覆盖（独立审查 P2-4：D 项读契约查契约属自证式校验，
+// 契约声明的 getSession/closeSession 曾根本未实现却全绿）。
+// 用 FastAPI 真实路由表比对，路径参数名归一化后匹配。
+try {
+  const py = process.env.UH_PYTHON || "python";
+  const raw = execSync(`"${py}" "${path.join(ROOT, "scripts", "dump-routes.py")}"`,
+    { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const line = raw.split("\n").find((l) => l.startsWith("ROUTES_JSON="));
+  const impl = JSON.parse(line.slice("ROUTES_JSON=".length));
+  const norm = (p) => p.replace(/\{[^}]+\}/g, "{}");
+  const implSet = new Set(impl.map(([m, p]) => m + " " + norm(p)));
+  const gaps = expected
+    .map(([m, p]) => [m, "/api/v1" + p])
+    .filter(([m, p]) => !implSet.has(m + " " + norm(p))
+      // health/ready/metrics 无 /api/v1 前缀
+      && !implSet.has(m + " " + norm(p.replace(/^\/api\/v1/, ""))));
+  check("D2 契约端点实现覆盖（非自证）", gaps.length === 0,
+    gaps.length ? "未实现: " + JSON.stringify(gaps) : expected.length + " 操作均有真实路由");
+} catch (e) {
+  check("D2 契约端点实现覆盖（非自证）", false, childError(e));
+}
+
 // E. 基线待修订项（信息项：docx 冲突应在评审后按修订对照消除）
 const v3p = path.join(ROOT, ".work/docx-v3-text.txt");
 if (fs.existsSync(v3p)) {

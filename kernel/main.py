@@ -271,6 +271,7 @@ def create_app() -> FastAPI:
     # registry 在 memory 创建后绑定（见下方），此处占位保证属性存在
     app.state.sessions = set()  # 三审 P1-6：本地快取（共享视图以 registry 为准）
     app.state.session_owners = {}
+    app.state.session_meta = {}  # 独立审查 P2-4：getSession 需 created_at/status
     app.state.idempotency_locks = {}
     app.state.bus = EventBus()
     app.state.hooks = HookManager(app.state.bus)
@@ -794,9 +795,61 @@ def create_app() -> FastAPI:
         client_id = (_request_client_id(request) if _strict_client_identity() else None) or sid
         app.state.sessions.add(sid)
         app.state.session_owners[sid] = client_id
+        # 独立审查 P2-4：契约声明 getSession/closeSession 但实现缺失。
+        # 记录会话元数据供 GET /sessions/{id} 返回（Session schema 要求 created_at/status）。
+        app.state.session_meta[sid] = {"created_at": now, "status": "active"}
         await app.state.session_registry.register(sid, client_id)
         response.set_cookie("uh_client_id", _client_cookie_value(client_id), httponly=True, samesite="lax")
         return _envelope({"session_id": sid, "client_id": _client_cookie_value(client_id), "status": "active", "created_at": now})
+
+    def _session_guard(request: Request, session_id: str):
+        """会话归属校验，与 send_message 同口径（双因子：token + client_id）。"""
+        if not (_truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))):
+            return None
+        owner = app.state.session_owners.get(session_id)
+        if owner is None:
+            return None
+        client_id = _request_client_id(request)
+        if client_id is not None and client_id != owner:
+            return Response(content=json.dumps(_envelope(error=_error_payload(
+                "UH-USR-1002", "无权访问会话", detail={"resource": "session", "session_id": session_id})),
+                ensure_ascii=False), status_code=403, media_type="application/json")
+        return None
+
+    @app.get("/api/v1/sessions/{session_id}")
+    async def get_session(session_id: str, request: Request):
+        """契约 openapi.yaml getSession：获取会话详情。"""
+        meta = app.state.session_meta.get(session_id)
+        if meta is None and not await app.state.session_registry.exists(session_id):
+            return Response(content=json.dumps(_envelope(error=_error_payload(
+                "UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})),
+                ensure_ascii=False), status_code=404, media_type="application/json")
+        denied = _session_guard(request, session_id)
+        if denied is not None:
+            return denied
+        meta = meta or {}
+        return _envelope({
+            "session_id": session_id,
+            "status": meta.get("status", "active"),
+            "created_at": meta.get("created_at", datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")),
+        })
+
+    @app.delete("/api/v1/sessions/{session_id}")
+    async def close_session(session_id: str, request: Request):
+        """契约 openapi.yaml closeSession：关闭会话并清理 L0 短期记忆。"""
+        meta = app.state.session_meta.get(session_id)
+        if meta is None and not await app.state.session_registry.exists(session_id):
+            return Response(content=json.dumps(_envelope(error=_error_payload(
+                "UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})),
+                ensure_ascii=False), status_code=404, media_type="application/json")
+        denied = _session_guard(request, session_id)
+        if denied is not None:
+            return denied
+        await app.state.memory.clear(session_id)
+        if meta is not None:
+            meta["status"] = "closed"
+        log_event(log, logging.INFO, "kernel.session.closed", session_id=session_id)
+        return _envelope({"session_id": session_id, "status": "closed"})
 
     @app.post("/api/v1/sessions/{session_id}/messages", status_code=202)
     async def send_message(session_id: str, req: MessageRequest, request: Request, response: Response):
