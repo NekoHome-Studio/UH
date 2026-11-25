@@ -47,6 +47,10 @@ class TaskManager:
         self._confirm_futures: dict[str, asyncio.Future] = {}
         self.tasks: dict[str, dict] = {}
         self.event_mapper = EventMapper()
+        # M3-9：有界执行闸（UH_TASK_CONCURRENCY=0 可关闭，回退原立即执行语义）
+        from .execution_gate import ExecutionGate, execution_limit
+
+        self._gate = ExecutionGate() if execution_limit() > 0 else None
         self.bus = bus
         if bus is not None:
             self._attach_bus(bus)
@@ -139,12 +143,22 @@ class TaskManager:
         return task_id, trace_id
 
     def _start_runner(self, task: dict, coro) -> None:
+        # M3-9 提交/执行解耦：经有界执行闸限制同时在跑的任务数。
+        # 排队等待是纯挂起（不占 CPU），使提交请求能及时被事件循环调度。
+        gate = getattr(self, "_gate", None)
+        if gate is not None:
+            async def gated() -> Any:
+                return await gate.run(lambda: coro)
+
+            inner = gated()
+        else:
+            inner = coro
         if otel.active():
             if task["trace_id"] == tracing.get_trace_id():
                 task["_trace_headers"] = otel.outbound_headers()
-            runner = otel.start_task(coro, task["trace_id"], carrier=task.get("_trace_headers"))
+            runner = otel.start_task(inner, task["trace_id"], carrier=task.get("_trace_headers"))
         else:
-            runner = asyncio.create_task(coro)
+            runner = asyncio.create_task(inner)
         task["_runner"] = runner
 
     async def _run_tool(self, task_id: str, session_id: str, tool_name: str, arguments: dict[str, Any], risk_level: str, host: Any) -> None:
