@@ -136,3 +136,46 @@ def test_sec05_no_embedded_credentials_in_examples():
     pattern = __import__("re").compile(r"AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
     for path in (ROOT / "examples").rglob("*.py"):
         assert not pattern.search(path.read_text(encoding="utf-8", errors="replace")), path
+
+
+# ---------- R2 审查 P1-5：三类漏出 ----------
+def test_sec01_redacted_prefix_does_not_shortcircuit():
+    """原文已含 *REDACTED* 时不得跳过熵检测（原第71行短路是逻辑漏洞）。"""
+    secret = "Zx9Kq2Lm7Pw4Rt8Yv3Nb6Hc1Jd5Fs0Ga"
+    out = redact_text(REDACTED + " " + secret)
+    assert secret not in out
+
+
+@pytest.mark.parametrize("payload", [
+    '{"dbPassword": "Zx9Kq2Lm7Pw4Rt8Yv3Nb6Hc1Jd5Fs0Ga"}',
+    '{"authToken": "Zx9Kq2Lm7Pw4Rt8Yv3Nb6Hc1Jd5Fs0Ga"}',
+    '{"apiKey": "Zx9Kq2Lm7Pw4Rt8Yv3Nb6Hc1Jd5Fs0Ga"}',
+    'dbPassword: "Zx9Kq2Lm7Pw4Rt8Yv3Nb6Hc1Jd5Fs0Ga"',
+])
+def test_sec01_camelcase_json_keys_are_redacted(payload):
+    """camelCase 键（dbPassword/authToken）原不匹配 _SENSITIVE_KEY 边界规则。"""
+    out = redact_text(payload)
+    assert "Zx9Kq2Lm7Pw4Rt8Yv3Nb6Hc1Jd5Fs0Ga" not in out
+
+
+def test_sec01_sequential_runs_with_spaces_are_redacted():
+    """含空白的字母序/数字序串，逐 token 熵检测必然漏过。"""
+    out = redact_text("abcdefg hijklmnop qrstuvwxyz 0123456789")
+    assert "hijklmnop" not in out
+    assert "0123456789" not in out
+
+
+@pytest.mark.parametrize("text", [
+    "the quick brown fox jumps over the lazy dog",
+    "configuration-management-system",
+    "task manager pipeline",
+    "用户请求已完成处理",
+])
+def test_sec01_natural_language_not_overredacted(text):
+    assert redact_text(text) == text
+
+
+def test_sec01_camelcase_key_normalization():
+    from kernel.redaction import redact_value
+    for key in ("dbPassword", "authToken", "apiKey", "masterKey", "privateKey"):
+        assert redact_value(key, "any-value-here") == REDACTED, key
