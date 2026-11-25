@@ -163,6 +163,13 @@ try {
 } catch (e) {
   check("N 安全专项与供应链（SEC-01~05 + SBOM）", false, childError(e));
 }
+// O 文档链接完整性（R-2）：CHANGELOG/RELEASE/README/AGENTS/PROGRESS 零死链
+try {
+  const out = execSync(`"${process.execPath}" "${path.join(ROOT, "scripts", "check-doc-links.mjs")}"`, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  check("O 文档链接完整性", out.includes("LINKS_OK"), (out || "").trim().split("\n").pop());
+} catch (e) {
+  check("O 文档链接完整性", false, childError(e));
+}
 const failed = results.filter(r => !r.ok && !r.info);
 console.log(failed.length === 0 ? "VERIFY_ALL_PASSED (" + results.length + " checks" + (FULL ? ", full" : ", fast") + ")" : "VERIFY_FAILED=" + failed.length);
 process.exit(failed.length === 0 ? 0 : 1);

@@ -45,3 +45,23 @@ REPO=NekoHome-Studio/UH bash uh-issues/create-issues.sh
 M1 生产链路二次验收（REST 全局鉴权方案待定）→ M2 插件期：M2-1 插件 SDK/manifest（#22 起，基于 contract-internal-v1）→ 沙箱/钩子/插件加载。
 
 > 里程碑：MS-0 契约冻结（#1~#6）→ M0 骨架（#7~#12）→ M1 能力（#13~#21）均已完成；三模型审查修复见 docs/reviews/。冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0。
+
+## 发布与变更
+
+- **[RELEASE.md](RELEASE.md)** —— v0.1.0 发布说明（亮点、质量数据、**已知限制**、快速开始）
+- **[CHANGELOG.md](CHANGELOG.md)** —— 新增 / 变更 / 修复 / 弃用四类变更，弃用项标注替代方案与移除版本
+- **[benchmarks/README.md](benchmarks/README.md)** —— 压测基准与 SLO 达成情况
+
+### 部署手册
+| 场景 | 文档 |
+|---|---|
+| Docker Compose | [docker-compose.md](docs/deployment/docker-compose.md) |
+| Kubernetes | [kubernetes.md](docs/deployment/kubernetes.md) |
+| 多进程调优 | [multiprocess.md](docs/deployment/multiprocess.md) |
+| 安全加固 | [security-hardening.md](docs/deployment/security-hardening.md) |
+| 加密与脱敏 | [security-m3-8.md](docs/deployment/security-m3-8.md) |
+| 链路追踪 | [tracing.md](docs/deployment/tracing.md) |
+| 协作模块 | [collaboration.md](docs/deployment/collaboration.md) |
+| 无 root Linux | [kylin-userland.md](docs/deployment/kylin-userland.md) |
+
+> **已知限制**：100 并发 P95 未达 SLO（错误率达标），详见 RELEASE.md。低并发（≤10）表现正常。
