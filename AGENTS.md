@@ -11,11 +11,12 @@
 ## 2. 当前状态（随进度更新）
 - MS-0 契约冻结：tag contract-v0.1.0，#1~#6 关闭；契约状态头已回写 frozen。
 - M0 骨架期完成（#7~#12，6/6）；M1 能力期完成（#13~#21，9/9）；M2 插件期**已结项**（#22~#27，tag m2-v0.1.0 + Release）。
-- **M3 生产期 8/9**（#28~#35 已关闭）：Compose 编排 · K8s + 最小 RBAC · Prometheus 指标告警 · OpenTelemetry · CrewAI 按需启停 · Desktop(Tauri 2) · 系统级安全加固 · L2 加密+日志脱敏+供应链 SBOM。**#36 压测 100 并发 + SLO 待做**（M3 最后一项）。
-- 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0 / m1-review-fixed-v0.1.0 / m1-review2-fixed-v0.1.0/ m2-v0.1.0。
-- M1 一~五审 + M2 独立验收/复检（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；379 测试 + verify-all full **14 项**（含 secret 扫描）；详见 docs/reviews/。
-- 当前（基线 b8b2a38）：**M3 中期深审 4 生产阻断已全修**（apiserver Egress / K8s observability / cgroup 委派 / 协作释放重试）；**SBX-07~09 已在 Kylin Linux 实机取证**（bwrap，6 passed）。
-- 下一步：**#36 压测 100 并发 + SLO + 成本分层** → MS-4 结项 → R-1 全量回归 / R-2 文档 CHANGELOG / R-3 发布包 → v0.1.0。
+- **M3 生产期完成**（#28~#36，9/9）；**MS-5 发布完成**（#37~#39）。
+- 🎉 **v0.1.0 已发布**：tag `v0.1.0` + GitHub Release（8 附件：5 签名 .uhpkg + 公钥 + manifest + SBOM）。**39/39 Issue 关闭，6/6 里程碑结项**。
+- 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0 / m1-review-fixed-v0.1.0 / m1-review2-fixed-v0.1.0 / m2-v0.1.0 / **v0.1.0**。
+- M1 一~五审 + M2 独立验收/复检（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；**421 测试 + verify-all full 15 项 A~O**（含 secret 扫描）；详见 docs/reviews/。
+- 当前：**v0.1.0 已交付**。质量：421 passed / 16 skipped，覆盖率 80%（M3 新增 95%），E2E/SBX/SEC 专项通过，SBX-07~09 Kylin Linux 实机取证。
+- 下一步（v0.2.0）：**独立执行进程池**冲 P95 SLO（当前 6.7~7.2s vs 目标 2000ms，错误率已达标）、per-user principal、L2 密钥轮换、AST 污点分析、TLS+WS 短时票据、macOS SBX 采证、移除 4 弃用码。
 - 登记项（不阻断）：per-user principal、L2 主密钥轮换、AST 污点分析替代静态黑名单、TLS+WS 短时票据、macOS SBX 矩阵（无主机）、Compose/K8s 真环境实跑。
 - 实时进度以 PROGRESS.md 为准；任务编号映射见 uh-issues/issue-map.csv（#1~#39）。
 

@@ -280,7 +280,22 @@
 - 门禁：**379 passed + 15 skipped**，verify-all **14 项 A~N**，secret 320 文件 0 命中，服务器同步 379
 - 服务器补齐 M3 全量部署（metrics/otel/collaboration/scaler/deploy 清单/desktop/scripts）
 
-## 下一步
+### 2026-11-25 · v0.1.0 发布完成 🎉
+
+- **R-1 全量回归**：421 passed / 16 skipped，覆盖率 80%（M3 新增 95%），E2E-01~08 + SBX-01~09 + SEC-01~05 专项通过，flaky 清零
+- **R-2 文档**：CHANGELOG 四类齐全（弃用 4 码标替代 + 移除版本 v0.2.0）、RELEASE.md、README 导航、零死链门禁 O 项
+- **R-3 发布包**：5 官方插件 .uhpkg + Ed25519 签名，实测 installed=5/5；公钥 + manifest + SBOM 随包
+- **tag v0.1.0 + GitHub Release**：https://github.com/NekoHome-Studio/UH/releases/tag/v0.1.0（8 附件）
+- **39/39 Issue 关闭，6/6 里程碑结项，0 open**
+- 门禁：verify-all **15 项 A~O**，secret 344 文件 0 命中
+
+**已知限制（写入 RELEASE.md）**：100 并发 P95 6.7~7.2s 未达 2000ms（错误率 0% 达标，相对基线改善 8~9 倍）；多架构镜像未构建；Desktop 未编译；macOS 未采证。
+
+## 下一步（v0.2.0）
+
+**独立执行进程池**（任务记录 Redis + 事件 pub/sub 重构）冲 P95 SLO → per-user principal → L2 密钥轮换 → AST 污点分析 → TLS+WS 短时票据 → macOS SBX → 移除 4 弃用码
+
+## 历史下一步
 
 **M3 剩余：** #36 压测 100 并发 + SLO + 成本分层（需真环境实跑，脚本可先写）→ MS-4 结项
 **发布（MS-5）：** R-1 全量回归 / R-2 文档 CHANGELOG / R-3 发布包 → v0.1.0
