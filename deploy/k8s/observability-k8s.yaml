@@ -29,17 +29,33 @@ spec:
   template:
     metadata: { labels: { app: otel-collector } }
     spec:
+      # 独立审查 P1-4：辅助工作负载此前无 securityContext，且 J/M 门禁不校验它，
+      # 可被赋予 privileged + hostNetwork + uh-scaler SA 而全绿。现与业务工作负载同口径加固。
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
       containers:
         - name: collector
           image: otel/opentelemetry-collector-contrib:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           ports: [{ containerPort: 4317 }, { containerPort: 4318 }]
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 500m, memory: 512Mi }
-          volumeMounts: [{ name: config, mountPath: /etc/otelcol-contrib/config.yaml, subPath: config.yaml }]
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol-contrib/config.yaml, subPath: config.yaml }
+            - { name: tmp, mountPath: /tmp }
       volumes:
         - name: config
           configMap: { name: otel-collector-config }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 64Mi }
 ---
 apiVersion: v1
 kind: ConfigMap

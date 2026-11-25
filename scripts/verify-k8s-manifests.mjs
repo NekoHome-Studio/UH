@@ -177,6 +177,22 @@ export function verifyK8sManifests(documents) {
     && equal(binding?.roleRef, { kind: "Role", name: ROLE, apiGroup: RBAC }),
   "RoleBinding must bind the in-namespace scaler ServiceAccount to its Role only");
 
+  // 独立审查 P1-4：otel-collector 在 resources/Service 白名单内却从不进入本循环，
+  // 可被赋予 privileged + hostNetwork + hostPort + uh-scaler SA 而 J/M 双门禁全绿。
+  // 辅助工作负载同样必须受隔离约束（但标签体系与业务不同，单独校验）。
+  const auxiliary = ["otel-collector"];
+  for (const name of auxiliary) {
+    const podSpec = get("Deployment", name)?.spec?.template?.spec;
+    const containers = [...(podSpec?.containers ?? []), ...(podSpec?.initContainers ?? [])];
+    check(Boolean(podSpec) && !podSpec.hostNetwork && !podSpec.hostPID && !podSpec.hostIPC
+      && !containers.some((c) => c.securityContext?.privileged)
+      && !containers.some((c) => c.ports?.some((p) => p.hostPort !== undefined)),
+    `${name} must not use host namespaces, privileged mode or host ports`);
+    check((podSpec?.serviceAccountName ?? "default") === "default"
+      && podSpec?.automountServiceAccountToken === false,
+    `${name} must not mount scaler credentials`);
+  }
+
   for (const name of [...workloads, ...Object.keys(stores)]) {
     const datastore = Object.hasOwn(stores, name);
     const tier = datastore ? "datastore" : name === KERNEL ? "kernel" : "capability";

@@ -61,6 +61,22 @@ export function verifySecurityHardening(yaml, root = ROOT) {
 
   const compose = yaml.load(read("docker-compose.yaml"));
   const deployments = yaml.loadAll(read("deploy/k8s/deployments.yaml"));
+
+  // 独立审查 P1-4：otel-collector 此前不在 WORKLOADS，M 项对其加固完全无感。
+  // 它只在 K8s 侧交付（compose 走 observability overlay），故单独校验 K8s podSpec。
+  const auxDocs = yaml.loadAll(read("deploy/k8s/observability-k8s.yaml"));
+  const auxPod = auxDocs.find((d) => d?.kind === "Deployment" && d.metadata?.name === "otel-collector")
+    ?.spec?.template?.spec;
+  const auxCtx = auxPod?.securityContext;
+  const auxSec = auxPod?.containers?.[0]?.securityContext;
+  check(auxPod?.automountServiceAccountToken === false
+    && auxCtx?.runAsNonRoot === true && auxCtx.runAsUser === 10001 && auxCtx.runAsGroup === 10001,
+  "K8s otel-collector must be non-root and must not mount service account tokens");
+  check(auxSec?.readOnlyRootFilesystem === true && auxSec.allowPrivilegeEscalation === false
+    && equal(auxSec.capabilities, { drop: ["ALL"] }) && !auxSec.privileged
+    && !auxPod.hostNetwork && !auxPod.containers?.[0]?.ports?.some((p) => p.hostPort !== undefined),
+  "K8s otel-collector must use a read-only root, drop all capabilities and avoid host namespaces");
+
   for (const name of WORKLOADS) {
     const service = compose.services?.[name];
     check(service?.user === "10001:10001" && service.read_only === true
