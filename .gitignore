@@ -25,3 +25,5 @@ Desktop.ini
 dist/
 .coverage
 htmlcov/
+*.pem
+release-signing-key.pem
