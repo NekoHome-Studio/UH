@@ -176,3 +176,39 @@ uh bench run --scenario chat --concurrency 100 --json
 而组件合计仅 513ms（LLM 312 + 召回 41 + 写入 160）。**差 5.5s 在任务执行路径内，未定位**。
 
 详见 [多进程部署手册](../docs/deployment/multiprocess.md)。
+
+
+---
+
+## 11. 证据链补齐（独立审查 P1-2 修复）
+
+Hunyuan 审查指出两处失真，均已修正：
+
+### ① server_baseline 曾无硬件字段
+原 `fetch_server_baseline` 只取 `/health` 与 `/metrics`，产出仅
+`{health_status, kernel_version, metrics_families}`——**服务端 CPU/内存/平台从未采集**，
+使「双端硬件基线、数字可比」承诺不成立。
+
+**修复**：新增 `GET /api/v1/bench/baseline`（非契约端点，`include_in_schema=False`），
+返回服务端 `hardware_baseline()`；`fetch_server_baseline` 采集并合并。
+实测服务端字段齐全：`platform / machine / python / cpu_count / memory_total_gb /
+llm_provider / llm_model / retrieval_backend / doc_corpus_md_files`。
+
+### ② 最终数据组未随包
+此前 README 引用的 6.7~7.2s 那组无原始 JSON，「改善 8~9 倍」不可复核。
+
+**修复**：`benchmarks/kylin-4worker/` 随包提交三份原始 JSON（含每请求样本 + 双端基线）：
+
+| 场景 | 错误率 | P50 | P95 | P99 | 服务端基线 |
+|---|---|---|---|---|---|
+| chat | **0%** | 4407ms | **7420ms** | 7999ms | Kylin 8 核 / 29.38GB |
+| search | **0%** | 4445ms | **7321ms** | 7940ms | 同上 |
+| orchestrate | **0%** | 3396ms | **6854ms** | 8090ms | 同上 |
+
+> 采集时间 2026-11-25T12:20Z · 4 worker + Redis · mock delay 5ms · UH_TASK_CONCURRENCY=4
+> 与 §10 表格（6.6~7.2s）为**同配置不同轮次**，波动约 ±0.6s，属正常范围。
+> 复核命令见各 JSON 的 `client_baseline` / `server_baseline` 字段。
+
+### 仍未达标
+P95 ≤2000ms 目标未达成（6.85~7.42s）。根因与达标路径见 §5 与
+[延迟根因诊断](../docs/reviews/2026-11-25-延迟根因诊断.md)。

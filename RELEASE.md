@@ -39,7 +39,7 @@
 外加 **Tauri 2 桌面壳**（托盘 / 全局快捷键 / 通知）与**成本三档模板**（light / standard / enterprise）。
 
 ### 性能可测量
-`uh bench run --scenario chat --concurrency 100` 输出 P50/P95/P99 + SLO 判定 + **双端硬件基线**（客户端与服务端分列，数字可比）。
+`uh bench run --scenario chat --concurrency 100` 输出 P50/P95/P99 + SLO 判定 + **双端硬件基线**（客户端与服务端分列；服务端硬件经 /api/v1/bench/baseline 采集，原始 JSON 随包见 benchmarks/kylin-4worker/）。
 
 ## 质量数据
 
@@ -62,7 +62,7 @@
 | 指标 | 目标 | 实测 | 判定 |
 |---|---|---|---|
 | 错误率 | <1% | **0%** | ✅ 达标 |
-| P95 延迟 | ≤2000ms | **6.7~7.2s** | ❌ 未达标 |
+| P95 延迟 | ≤2000ms | **6.85~7.42s** | ❌ 未达标 |
 
 **低并发（≤10）表现正常**（5 并发 P95 ≈186ms，0% 错误）。
 

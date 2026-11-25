@@ -204,6 +204,21 @@ async def fetch_server_baseline(base_url: str, token: str) -> dict[str, Any]:
                     line.split()[0] for line in text.splitlines()
                     if line and not line.startswith("#")
                 })
+            # 独立审查 P1-2：采集服务端真实硬件（CPU/内存/平台/模型），
+            # 否则「双端硬件基线、数字可比」的承诺不成立。
+            try:
+                hw = await client.get(f"{base_url.rstrip('/')}/api/v1/bench/baseline", params=params)
+                if hw.status_code == 200:
+                    data = (hw.json() or {}).get("data") or {}
+                    for key in ("platform", "machine", "python", "cpu_count",
+                                "memory_total_gb", "llm_provider", "llm_model",
+                                "retrieval_backend", "doc_corpus_md_files"):
+                        if key in data:
+                            info[key] = data[key]
+                else:
+                    info["hardware_unavailable"] = f"HTTP {hw.status_code}"
+            except Exception as exc:
+                info["hardware_unavailable"] = type(exc).__name__
             return info
     except Exception as exc:
         return {"error": type(exc).__name__}

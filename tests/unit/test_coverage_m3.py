@@ -266,3 +266,36 @@ def test_bench_one_request_error_branches():
     assert out["msg_fail"].error == "message_submit"
     assert out["raise"].error == "RuntimeError"
     assert out["ok"].ok is True
+
+
+def test_bench_server_baseline_includes_hardware():
+    """独立审查 P1-2：server_baseline 曾只有 health/version/metrics，无硬件字段，
+    使 RELEASE 的「双端硬件基线、数字可比」承诺不成立。"""
+    import asyncio
+    import httpx
+    from kernel.bench import fetch_server_baseline
+    from kernel.main import create_app
+
+    app = create_app()
+
+    async def scenario():
+        tr = httpx.ASGITransport(app=app)
+        orig = httpx.AsyncClient.__init__
+
+        def patched(self, *a, **k):
+            k["transport"] = tr
+            k.pop("limits", None)
+            orig(self, *a, **k)
+
+        httpx.AsyncClient.__init__ = patched
+        try:
+            return await fetch_server_baseline("http://testserver", "")
+        finally:
+            httpx.AsyncClient.__init__ = orig
+
+    info = asyncio.run(scenario())
+    # 服务端硬件字段必须真实采集，而非仅客户端侧
+    for key in ("platform", "cpu_count", "memory_total_gb", "llm_provider", "retrieval_backend"):
+        assert key in info, f"server_baseline 缺 {key}"
+    assert info["cpu_count"] >= 1
+    assert "hardware_unavailable" not in info

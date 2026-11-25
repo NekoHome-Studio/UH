@@ -615,6 +615,18 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "ok", "version": __version__}
 
+    @app.get("/api/v1/bench/baseline", include_in_schema=False)
+    async def bench_baseline():
+        """独立审查 P1-2：压测需**服务端**硬件基线才能声称数字可比。
+
+        原 fetch_server_baseline 只取 /health 与 /metrics，从不采集 CPU/内存/平台，
+        导致 RELEASE 的「双端硬件基线」承诺不成立。此端点补齐服务端侧数据。
+        非契约端点（include_in_schema=False），仅供 uh bench 采集。
+        """
+        from .bench import hardware_baseline
+
+        return _envelope(hardware_baseline())
+
     @app.get("/metrics", response_class=Response)
     async def metrics():
         body = telemetry.render(
