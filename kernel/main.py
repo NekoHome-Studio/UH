@@ -184,9 +184,37 @@ def _read_client_identity_secret() -> bytes:
                 return hashlib.sha256(value).digest()
         except OSError:
             pass
-    # Tasks are in-memory today.  A process-local key is therefore sufficient
-    # until a persistent task store introduces a stable deployment secret.
+    # M3-9 多进程：进程本地随机密钥会让 worker A 签发的 client_id 在 worker B
+    # 验签失败（403）。多 worker 部署必须提供稳定密钥；此处从共享 Redis 派生，
+    # 使同一集群的 worker 自动一致（首个 worker 写入，其余读取）。
+    if int(os.environ.get("UH_WORKERS", "1")) > 1:
+        derived = _derive_shared_identity_secret()
+        if derived is not None:
+            return derived
+        raise RuntimeError(
+            "多 worker 部署需要稳定的 UH_CLIENT_ID_SECRET（或 UH_CLIENT_ID_SECRET_FILE / 可用 UH_REDIS_URL）"
+        )
     return secrets.token_bytes(32)
+
+
+def _derive_shared_identity_secret() -> bytes | None:
+    """从 Redis 取/建集群共享身份密钥（SETNX 保证只有一个 worker 生成）。"""
+    url = os.environ.get("UH_REDIS_URL")
+    if not url:
+        return None
+    try:
+        import redis
+
+        client = redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=3)
+        key = "uh:cluster:client_identity_secret"
+        client.setnx(key, secrets.token_hex(32))
+        raw = client.get(key)
+        if raw:
+            value = raw.decode() if isinstance(raw, bytes) else str(raw)
+            return hashlib.sha256(value.encode("utf-8")).digest()
+    except Exception:
+        return None
+    return None
 
 
 def _issue_client_identity(client_id: str, secret: bytes) -> str:
@@ -237,13 +265,19 @@ def create_app() -> FastAPI:
     trace_runtime = otel.configure()
     app.state.scaler = CrewAIScaler()
     app.state.idempotency_cache = {}
-    app.state.sessions = set()  # 三审 P1-6：会话注册表（存在性校验）
+    # M3-9 多进程：会话归属外置 Redis（无 Redis 回退进程内，单进程语义不变）
+    from .session_registry import create_session_registry
+
+    # registry 在 memory 创建后绑定（见下方），此处占位保证属性存在
+    app.state.sessions = set()  # 三审 P1-6：本地快取（共享视图以 registry 为准）
     app.state.session_owners = {}
     app.state.idempotency_locks = {}
     app.state.bus = EventBus()
     app.state.hooks = HookManager(app.state.bus)
     app.state.client_identity_secret = _read_client_identity_secret()
     app.state.memory = create_short_term_memory()
+    # M3-9 多进程：会话归属外置（复用 memory 的 Redis 连接；fakeredis/无 Redis 回退进程内）
+    app.state.session_registry = create_session_registry(app.state.memory)
     app.state.guard = StorageGuard()
     app.state.guard.declare("retrieval.search", {"retrieval"})  # 提前声明，供检索存储运行时归属校验
     app.state.guard.declare("memory.long_term", {"long_term"})  # 三审 N9：长期记忆命名空间
@@ -760,20 +794,22 @@ def create_app() -> FastAPI:
         client_id = (_request_client_id(request) if _strict_client_identity() else None) or sid
         app.state.sessions.add(sid)
         app.state.session_owners[sid] = client_id
+        await app.state.session_registry.register(sid, client_id)
         response.set_cookie("uh_client_id", _client_cookie_value(client_id), httponly=True, samesite="lax")
         return _envelope({"session_id": sid, "client_id": _client_cookie_value(client_id), "status": "active", "created_at": now})
 
     @app.post("/api/v1/sessions/{session_id}/messages", status_code=202)
     async def send_message(session_id: str, req: MessageRequest, request: Request, response: Response):
         # 三审 P1-6：会话存在性校验（契约要求不存在会话 USR-1003）
-        if session_id not in app.state.sessions:
+        # M3-9 多进程：本地快取未命中时查共享注册表（别的 worker 建的会话）
+        if session_id not in app.state.sessions and not await app.state.session_registry.exists(session_id):
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})), ensure_ascii=False), status_code=404, media_type="application/json")
         strict_identity = _strict_client_identity()
         client_id = _request_client_id(request)
         if client_id is None and strict_identity:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "需要有效的 client_id 身份凭据")), ensure_ascii=False), status_code=403, media_type="application/json")
         client_id = client_id or session_id
-        session_owner = app.state.session_owners.get(session_id)
+        session_owner = app.state.session_owners.get(session_id) or await app.state.session_registry.owner(session_id)
         if strict_identity and session_owner and client_id != session_owner:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "无权访问会话", detail={"resource": "session", "session_id": session_id})), ensure_ascii=False), status_code=403, media_type="application/json")
         owner_token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")  # query token 也设归属，与 WS 一致
@@ -886,7 +922,7 @@ def create_app() -> FastAPI:
         if client_id is None and strict_identity:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "需要有效的 client_id 身份凭据")), ensure_ascii=False), status_code=403, media_type="application/json")
         client_id = client_id or req.session_id
-        session_owner = app.state.session_owners.get(req.session_id)
+        session_owner = app.state.session_owners.get(req.session_id) or await app.state.session_registry.owner(req.session_id)
         if strict_identity and session_owner and client_id != session_owner:
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1002", "无权访问会话", detail={"resource": "session", "session_id": req.session_id})), ensure_ascii=False), status_code=403, media_type="application/json")
         owner_token = _bearer_token(request.headers.get("Authorization")) or request.query_params.get("token")
