@@ -106,7 +106,9 @@ export function trackedTextFiles(root) {
 // 审查报告与探针记录里**必然包含攻击样本字符串**（如 sk_live_…、base64 字母序），
 // 它们是文档证据不是可用凭据。GitHub Push Protection 亦会拦这类形态，
 // 故报告目录整体豁免；真实凭据仍由其余全量文件扫描覆盖。
-const SCAN_EXEMPT = /[\\/]docs[\\/]reviews[\\/]/;
+// 审查报告与测试文件必然包含攻击样本字符串（如 sk_live_…、postgres://user:pass@），
+// 它们是文档证据或测试数据不是可用凭据。真实凭据仍由其余全量文件覆盖。
+const SCAN_EXEMPT = /(?:^|[\\/])docs[\\/](?:reviews)[\\/]|(?:^|[\\/])tests[\\/]/;
 
 function scanFiles(root, files) {
   const hits = [];

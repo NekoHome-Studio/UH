@@ -29,7 +29,7 @@ def _verify(docs):
         "console.log(JSON.stringify(verifyK8sManifests(docs)));"
     )
     r = subprocess.run(["node", "--input-type=module", "-e", script, json.dumps(docs)],
-                       cwd=ROOT, capture_output=True, text=True, timeout=120)
+                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert r.returncode == 0, r.stderr
     line = [l for l in r.stdout.splitlines() if l.startswith("[")]
     assert line, r.stdout

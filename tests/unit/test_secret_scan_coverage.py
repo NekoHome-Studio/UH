@@ -15,7 +15,7 @@ def _scan(snippet):
         "console.log(hasPlainAuthToken(" + json.dumps(snippet) + ") ? 'HIT' : 'MISS');"
     )
     r = subprocess.run(["node", "--input-type=module", "-e", script],
-                       cwd=ROOT, capture_output=True, text=True, timeout=60)
+                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert r.returncode == 0, r.stderr
     return "HIT" in r.stdout
 
@@ -58,6 +58,6 @@ def test_empty_value_does_not_swallow_next_line():
 
 def test_repository_scan_passes():
     r = subprocess.run(["node", "scripts/secret-scan.mjs"], cwd=ROOT,
-                       capture_output=True, text=True, timeout=180)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "SECRET_SCAN_PASSED" in r.stdout
