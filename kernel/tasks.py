@@ -603,7 +603,13 @@ class TaskManager:
         # context.memory_scope 覆盖全局 UH_MEMORY_SCOPE，插件可指定。
         scope = str(context.get("memory_scope") or os.environ.get("UH_MEMORY_SCOPE", "global")).lower()
         recall_session = session_id if scope == "session" else context.get("session_id")
-        result = method(content, top_k=int(context.get("top_k", 5)), session_id=recall_session, memory_recall=True)
+        # M3-9：同步召回同样是纯 CPU（embedding + 余弦），移出事件循环。
+        if inspect.iscoroutinefunction(method):
+            result = await method(content, top_k=int(context.get("top_k", 5)), session_id=recall_session, memory_recall=True)
+        else:
+            result = await asyncio.to_thread(
+                method, content, top_k=int(context.get("top_k", 5)), session_id=recall_session, memory_recall=True
+            )
         return await result if inspect.isawaitable(result) else result
 
     async def _long_term_write(self, content: str, session_id: str, context: dict[str, Any], *, role: str) -> None:
@@ -620,7 +626,14 @@ class TaskManager:
 
     @otel.instrument_async("memory.write")
     async def _write_memory(self, method, content: str, session_id: str, role: str) -> None:
-        result = method(content, session_id=session_id, metadata={"role": role}, memory_recall=True)
+        # M3-9：同步长期记忆写入含 embedding + AES-GCM 加密 + 写盘（实测 ~110ms/次），
+        # 直接在事件循环里跑会连续占用 CPU 无抢占点，高并发下饿死请求提交路径。
+        if inspect.iscoroutinefunction(method):
+            result = await method(content, session_id=session_id, metadata={"role": role}, memory_recall=True)
+        else:
+            result = await asyncio.to_thread(
+                method, content, session_id=session_id, metadata={"role": role}, memory_recall=True
+            )
         if inspect.isawaitable(result):
             result = await result
         if result is not None and self.bus is not None:

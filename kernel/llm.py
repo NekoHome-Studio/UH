@@ -168,6 +168,10 @@ class MockLLMClient:
 
     def __init__(self, **kwargs: Any):
         self.model = "mock"
+        # M3-9：逐字符 sleep 是为演示流式效果，但高并发下 N×字符数 次调度会拥塞
+        # 事件循环（100 并发 × 53 字符 = 5300 次），拖慢请求提交路径。
+        # 压测/生产可设 UH_LLM_MOCK_DELAY_MS=0 消除人为延迟；默认 5ms 保持演示行为。
+        self._delay_s = max(0.0, float(os.environ.get("UH_LLM_MOCK_DELAY_MS", "5")) / 1000.0)
 
     @property
     def uh_token_usage_total(self) -> dict:
@@ -178,7 +182,8 @@ class MockLLMClient:
         text = "这是 UH! 内核的演示回复（mock provider，未配置真实 LLM）。收到：" + last
         for ch in text:
             yield ch
-            await asyncio.sleep(0.005)
+            if self._delay_s > 0:
+                await asyncio.sleep(self._delay_s)
 
     async def chat(self, messages: list[dict], **kwargs: Any) -> str:
         return "".join([c async for c in self.stream_chat(messages, **kwargs)])
