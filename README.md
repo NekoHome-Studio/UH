@@ -1,5 +1,13 @@
 # UH!（Ultra Harness）
 
+[![Release](https://img.shields.io/github/v/release/NekoHome-Studio/UH?display_name=tag&sort=semver)](https://github.com/NekoHome-Studio/UH/releases/tag/v0.1.0)
+[![Tests](https://img.shields.io/badge/tests-421%20passed-brightgreen)](https://github.com/NekoHome-Studio/UH/blob/main/docs/reviews/2026-11-25-R1-%E5%8F%91%E5%B8%83%E5%9B%9E%E5%BD%92%E6%8A%A5%E5%91%8A.md)
+[![Gates](https://img.shields.io/badge/gates-15%2F15-brightgreen)](https://github.com/NekoHome-Studio/UH/blob/main/scripts/verify-all.mjs)
+[![Coverage](https://img.shields.io/badge/coverage-80%25-green)](https://github.com/NekoHome-Studio/UH/blob/main/RELEASE.md)
+
+> 📢 **[v0.1.0 发布公告](https://github.com/NekoHome-Studio/UH/issues/40)** · Watch 本仓库可收到后续版本通知
+
+
 > 集百家之长，做用户之尚 —— 个人 AI Agent 运行底座
 > 当前阶段：v0.1.0 · M1 能力期完成（9/9）+ 审查修复 · 计划基线 20 周
 
