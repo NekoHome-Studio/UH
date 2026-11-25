@@ -136,3 +136,28 @@ def test_sec05_no_embedded_credentials_in_examples():
     pattern = __import__("re").compile(r"AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
     for path in (ROOT / "examples").rglob("*.py"):
         assert not pattern.search(path.read_text(encoding="utf-8", errors="replace")), path
+
+
+@pytest.mark.parametrize("secret", [
+    "sk-abc123",                    # 9 字符，低于熵检测 24 门槛
+    "ghp_abc123",                   # GitHub PAT 短形态
+    "sk-live-abcdef123456",
+    "sk-proj-xyz789abc",
+    "glpat-abcdefghij",
+    "xoxb-123456789012-abc",
+    "AIzaSyAbCdEfGhIjKlMnOpQrStUv",
+])
+def test_sec01_short_vendor_prefixed_credentials_are_redacted(secret):
+    """独立审查发现：熵检测要求 ≥24 字符，厂商前缀短 token 会漏出。
+
+    前缀本身即强信号，不依赖长度与熵阈值。
+    """
+    out = redact_text(f"key={secret}")
+    assert REDACTED in out, f"{secret} leaked"
+    assert secret not in out
+
+
+def test_sec01_vendor_prefix_does_not_overredact_normal_words():
+    # 常见词不得误杀（前缀规则须有边界与最小长度）
+    for text in ("task-manager", "risk-assessment", "disk-usage", "the quick brown fox"):
+        assert redact_text(text) == text, text
