@@ -446,6 +446,51 @@ def plugin_dev(args) -> int:
         stop()
 
 
+
+def bench_run(args) -> int:
+    """uh bench run：并发压测 + SLO 判定 + 基准落盘（M3-9）。"""
+    from pathlib import Path
+
+    from .bench import evaluate_slo, fetch_server_baseline, hardware_baseline, run_bench, write_report
+
+    base = args.base_url or f"http://{args.host}:{args.port}"
+    token = args.token or os.environ.get("UH_AUTH_TOKEN", "")
+    if not token:
+        token_file = os.environ.get("UH_AUTH_TOKEN_FILE")
+        if token_file and Path(token_file).exists():
+            token = Path(token_file).read_text(encoding="utf-8").strip()
+    # httpx 对 params 自动做 URL 编码（含 base64 的 +/=），此处不得预先 quote，
+    # 否则双重编码导致服务端解出的 token 与真值不符 → 401。
+    token = token.strip() if token else ""
+    requests_total = args.requests if args.requests > 0 else args.concurrency * 2
+    try:
+        result = asyncio.run(run_bench(
+            base_url=base, token=token, scenario=args.scenario,
+            concurrency=args.concurrency, requests=requests_total, timeout_s=args.timeout,
+        ))
+    except (ValueError, OSError) as exc:
+        print(f"BENCH_FAILED: {exc}", file=sys.stderr)
+        return 2
+    slo = evaluate_slo(result, max_error_rate=args.slo_error_rate, max_p95_ms=args.slo_p95_ms)
+    server_baseline = asyncio.run(fetch_server_baseline(base, token))
+    report = write_report(result, slo, out_dir=Path(args.out_dir), server_baseline=server_baseline)
+    summary = result.summary()
+    if args.json:
+        print(json.dumps({"summary": summary, "slo": slo, "report": str(report),
+                          "client_baseline": hardware_baseline(), "server_baseline": server_baseline}, ensure_ascii=False))
+    else:
+        lat = summary["latency_ms"]
+        print(f"scenario={result.scenario} concurrency={result.concurrency} requests={summary['requests']}")
+        print(f"errors={summary['errors']} error_rate={summary['error_rate']:.4%}")
+        print(f"latency p50={lat['p50']}ms p95={lat['p95']}ms p99={lat['p99']}ms max={lat['max']}ms")
+        for name, check in slo["checks"].items():
+            mark = "PASS" if check["passed"] else "FAIL"
+            print(f"SLO {name}: {mark} value={check['value']} limit={check['limit']}")
+        print(f"report={report}")
+        print("BENCH_PASSED" if slo["passed"] else "BENCH_SLO_FAILED")
+    return 0 if slo["passed"] else 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="uh", description="UH! Ultra Harness CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -485,7 +530,26 @@ def main(argv=None) -> int:
     dev_plugin = pluginsub.add_parser("dev", help="开发目录热重载")
     dev_plugin.add_argument("source")
     dev_plugin.add_argument("--once", action="store_true")
+    bench = sub.add_parser("bench", help="并发压测 + SLO 判定（M3-9）")
+    benchsub = bench.add_subparsers(dest="action")
+    brun = benchsub.add_parser("run", help="执行压测场景")
+    brun.add_argument("--scenario", choices=["chat", "search", "orchestrate", "collaborate"], default="chat")
+    brun.add_argument("--concurrency", type=int, default=100)
+    brun.add_argument("--requests", type=int, default=200, help="总请求数（默认 2×并发）")
+    brun.add_argument("--host", default="127.0.0.1")
+    brun.add_argument("--port", type=int, default=8080)
+    brun.add_argument("--base-url", help="覆盖 http://host:port")
+    brun.add_argument("--token", help="鉴权 token（缺省读 UH_AUTH_TOKEN / UH_AUTH_TOKEN_FILE）")
+    brun.add_argument("--slo-error-rate", type=float, default=0.01)
+    brun.add_argument("--slo-p95-ms", type=float, default=2000.0)
+    brun.add_argument("--timeout", type=float, default=30.0)
+    brun.add_argument("--out-dir", default="benchmarks")
+    brun.add_argument("--json", action="store_true", help="仅输出 JSON（供 CI 消费）")
     args = parser.parse_args(argv)
+    if args.cmd == "bench":
+        if not getattr(args, "action", None):
+            bench.print_help(); return 0
+        return bench_run(args)
     if args.cmd == "confirm":
         return confirm_task(args)
     if args.cmd == "memory":
