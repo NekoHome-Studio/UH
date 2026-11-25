@@ -368,6 +368,22 @@ def create_app() -> FastAPI:
         return _issue_client_identity(client_id, app.state.client_identity_secret)
 
     @app.on_event("startup")
+    async def configure_executor() -> None:
+        """M3-9：同步 CPU handler 走 asyncio.to_thread，默认 executor 上限
+        min(32, cpu+4) 在 100 并发下成为排队瓶颈。按 UH_THREAD_POOL_SIZE 放大。
+        """
+        import concurrent.futures
+
+        default = max(32, (os.cpu_count() or 4) * 4)
+        size = int(os.environ.get("UH_THREAD_POOL_SIZE", str(default)))
+        if size > 0:
+            loop = asyncio.get_running_loop()
+            loop.set_default_executor(
+                concurrent.futures.ThreadPoolExecutor(max_workers=size, thread_name_prefix="uh-cap")
+            )
+            log_event(log, logging.INFO, "kernel.executor.configured", workers=size)
+
+    @app.on_event("startup")
     async def start_capabilities() -> None:
         # MCP tools 通过 Host 注册到能力目录；主链路的兼容别名由上面的
         # retrieval.search handler 提供，以保持 M1-1 TaskManager 契约不变。

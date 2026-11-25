@@ -7,6 +7,7 @@ JSON-RPC 以及具体传输留在本模块内。默认传输是 stdio，也提�
 from __future__ import annotations
 
 import asyncio
+import inspect
 import contextlib
 import itertools
 import json
@@ -96,10 +97,22 @@ class InProcessTransport:
             self._tasks.pop(request_id, None)
 
     async def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
-        try:
-            value = self.handler(request)
-        except TypeError:
-            value = self.handler(request["method"], request.get("params", {}))
+        # M3-9 性能：同步 handler（如检索的 embedding/余弦计算）是纯 CPU，
+        # 直接在事件循环里跑会让高并发下的请求提交路径被饿死（实测 100 并发 P95 >16s）。
+        # 同步 handler 一律丢线程池；异步 handler 仍在循环内 await。
+        if inspect.iscoroutinefunction(self.handler):
+            try:
+                value = self.handler(request)
+            except TypeError:
+                value = self.handler(request["method"], request.get("params", {}))
+        else:
+            def _call() -> Any:
+                try:
+                    return self.handler(request)
+                except TypeError:
+                    return self.handler(request["method"], request.get("params", {}))
+
+            value = await asyncio.to_thread(_call)
         response = await _maybe_await(value)
         if response is None:
             return {"jsonrpc": "2.0", "id": request.get("id"), "result": {}}

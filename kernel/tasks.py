@@ -276,13 +276,29 @@ class TaskManager:
         now = time.time()
         task["event_buffer"].append({"event": mapped, "recorded_at": now})
         if task["status"] == "running":
-            cutoff = now - self.REPLAY_WINDOW_SECONDS
-            task["event_buffer"][:] = [entry for entry in task["event_buffer"] if self._entry_recorded_at(entry) >= cutoff]
+            # M3-9 性能：原实现每条事件都全量重建 buffer（O(n)），delta 高频下
+            # 100 并发 × 45 token 会退化成 O(n²)。改为按计数节流 + 从头裁剪
+            # （buffer 按时间递增，遇到未过期即可停止）。
+            buffer = task["event_buffer"]
+            task["_trim_counter"] = task.get("_trim_counter", 0) + 1
+            if len(buffer) > 256 and task["_trim_counter"] % 32 == 0:
+                cutoff = now - self.REPLAY_WINDOW_SECONDS
+                drop = 0
+                for entry in buffer:
+                    if self._entry_recorded_at(entry) >= cutoff:
+                        break
+                    drop += 1
+                if drop:
+                    del buffer[:drop]
         elif event in self.TERMINAL_EVENTS:
             task["event_buffer"][:] = [e for e in task["event_buffer"] if e["event"]["event"] != "delta"]  # 四审 P1-4：终态释放 delta bulk，保留结构事件（step_log 保全量步骤）
         for subscriber in tuple(task["subscribers"]):
             await subscriber.put(mapped)
-        if self.bus is not None and event not in {"tool.call", "tool.result"}:
+        # M3-9 性能：delta 是 UI 流式增量（每 token 一条），不承载审计/指标语义。
+        # hooks 订阅 "*"、metrics 订阅具体事件，让 delta 进内部总线会把
+        # 45 token × 100 并发 = 4500 次 publish 放大成钩子队列洪泛（实测 P95 >12s）。
+        # delta 仍走 task["subscribers"] 推给 SSE/WS 消费者，外部契约不变。
+        if self.bus is not None and event not in {"tool.call", "tool.result", "delta"}:
             if event == "task.created":
                 await self.bus.publish(
                     "kernel.request.received", {"task_id": task_id, "session_id": task["session_id"]},

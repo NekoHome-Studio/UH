@@ -60,12 +60,30 @@ def wrap_untrusted_content(text: str, source: str = "") -> str:
 
 
 class DeterministicEmbedding:
-    """无需网络和模型下载的确定性词袋哈希 embedding。"""
+    """无需网络和模型下载的确定性词袋哈希 embedding。
+
+    M3-9 性能：embed 是纯 CPU（每 token 一次 SHA256 + 归一化），高并发下会阻塞
+    事件循环。加 LRU 缓存消除重复查询的重复计算（压测/热点查询命中率高）。
+    """
 
     def __init__(self, dimension: int | None = None) -> None:
         self.dimension = dimension or _env_int("UH_EMBEDDING_DIM", 128)
+        self._cache: dict[str, list[float]] = {}
+        self._cache_limit = _env_int("UH_EMBEDDING_CACHE", 512)
 
     def embed(self, text: str) -> list[float]:
+        cached = self._cache.get(text)
+        if cached is not None:
+            return cached
+        vector = self._embed_uncached(text)
+        if self._cache_limit > 0:
+            if len(self._cache) >= self._cache_limit:
+                # 简单 FIFO 淘汰：避免无界增长（热点查询仍在窗口内）
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[text] = vector
+        return vector
+
+    def _embed_uncached(self, text: str) -> list[float]:
         vector = [0.0] * self.dimension
         tokens = _TOKEN_RE.findall(text.lower()) or [text.lower()]
         for token in tokens:
@@ -129,10 +147,39 @@ class LocalVectorStore:
         self._save()
         return document
 
+    def _tokens_of(self, text: str) -> set[str]:
+        return set(_TOKEN_RE.findall(text.lower()))
+
+    def _rebuild_index(self) -> None:
+        """M3-9：倒排索引（token → 文档下标），供 query 预筛。"""
+        self._inverted: dict[str, set[int]] = {}
+        for idx, doc in enumerate(self.documents):
+            for token in self._tokens_of(doc.text):
+                self._inverted.setdefault(token, set()).add(idx)
+        self._index_size = len(self.documents)
+
     def query(self, query: str, top_k: int = 5) -> list[tuple[Document, float]]:
         self._guard_access()
         q = self.embedding.embed(query)
-        scored = [(_cosine(q, d.vector or self.embedding.embed(d.text)), d) for d in self.documents]
+        # M3-9 性能：原实现对全部文档算 128 维余弦，纯 CPU 且随语料线性增长，
+        # 100 并发下饱和 GIL（实测 search P95 >55s）。先用倒排索引取候选集，
+        # 只对含查询词的文档算余弦；无命中时退回全量（保持召回语义不变）。
+        if getattr(self, "_index_size", -1) != len(self.documents):
+            self._rebuild_index()
+        tokens = self._tokens_of(query)
+        candidates: set[int] = set()
+        for token in tokens:
+            candidates |= self._inverted.get(token, set())
+        if not candidates:
+            candidates = set(range(len(self.documents)))
+        scored = []
+        for idx in candidates:
+            doc = self.documents[idx]
+            vector = doc.vector
+            if vector is None:
+                vector = self.embedding.embed(doc.text)
+                doc.vector = vector
+            scored.append((_cosine(q, vector), doc))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [(d, score) for score, d in scored[: max(1, top_k)] if score > 0]
 
