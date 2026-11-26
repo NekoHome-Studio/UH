@@ -299,5 +299,6 @@ def test_cardinality_gate_rejects_regressions(tmp_path, original, replacement, e
     (kernel / "metrics.py").write_text(source.replace(original, replacement, 1), encoding="utf-8")
     script = (ROOT / "scripts" / "verify-metrics-cardinality.mjs").as_uri()
     command = f"import {{verifyMetricsCardinality}} from {json.dumps(script)}; verifyMetricsCardinality(process.argv[1]);"
-    result = subprocess.run(["node", "--input-type=module", "-e", command, str(tmp_path)], capture_output=True, text=True)
+    result = subprocess.run(["node", "--input-type=module", "-e", command, str(tmp_path)],
+                      capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert result.returncode != 0 and expected in result.stderr

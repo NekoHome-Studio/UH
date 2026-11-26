@@ -8,8 +8,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // lists are checked without adding a JS parser dependency.
 const scan = String.raw`
 import ast
+import sys
 from pathlib import Path
 
+root = Path.cwd()
 allowed = {"method", "route", "status_code", "task_type", "module", "model", "plugin_name", "outcome"}
 client_types = {"Counter", "Gauge", "Histogram", "Summary", "Info", "Enum", "StateSet"}
 http_labels = {
@@ -25,7 +27,29 @@ def argument(call, keyword, position, default):
     return next((kw.value for kw in call.keywords if kw.arg == keyword),
                 call.args[position] if len(call.args) > position else default)
 
-for file in sorted(Path("kernel").rglob("*.py")):
+
+def is_getattr_metric(call):
+    """识别 getattr(X, "Metric") / getattr(X, "<ClientType>") 动态注册形态。
+
+    静态 AST 无法解析 getattr 的运行时目标，但可识别其句法形态：
+    第一个位置参数为对象，第二个为字符串 "Metric" 或 Prometheus 客户端类型名。
+    此类调用一律视为 metric 注册并按同等规则校验 label 白名单。
+    """
+    func = call.func
+    if not isinstance(func, ast.Call):
+        return False
+    if not isinstance(func.func, ast.Name) or func.func.id != "getattr":
+        return False
+    if len(func.args) < 2:
+        return False
+    attr = func.args[1]
+    if not isinstance(attr, ast.Constant) or not isinstance(attr.value, str):
+        return False
+    return attr.value in client_types or attr.value == "Metric"
+
+
+for file in sorted((root / "kernel").rglob("*.py")):
+    rel = file.relative_to(root).as_posix()
     tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     local = {"Metric"}
@@ -50,7 +74,7 @@ for file in sorted(Path("kernel").rglob("*.py")):
         if not isinstance(node, ast.Call):
             continue
         callee = ast.unparse(node.func)
-        custom = callee in local or callee.endswith(".Metric")
+        custom = callee in local or callee.endswith(".Metric") or is_getattr_metric(node)
         prometheus = callee in client or (
             callee.split(".")[0] in modules and callee.rsplit(".", 1)[-1] in client_types
         )
@@ -76,7 +100,7 @@ for file in sorted(Path("kernel").rglob("*.py")):
         if "route" in labels:
             parent = parents[node]
             target = ast.unparse(parent.targets[0]) if isinstance(parent, ast.Assign) else ""
-            if file != Path("kernel/metrics.py") or tuple(labels) != http_labels.get(target):
+            if rel != "kernel/metrics.py" or tuple(labels) != http_labels.get(target):
                 errors.append(f"{location}: route labels must use the HTTP template instrumentation")
             else:
                 route_sites[target] = name
@@ -103,6 +127,25 @@ else:
             or not {"self._counters[REQUESTS][method, route, status_code, task_type]",
                     "self._counters[REQUEST_ERRORS][method, route, status_code]"} <= increments):
         errors.append("kernel/metrics.py: HTTP counters and histogram must use the resolved route template")
+
+# 运行时采集：快照 kernel.metrics 中的 Metric 实例，校验 label 白名单。
+# 捕获静态 AST 难以覆盖的动态注册（如 module scope 执行的 getattr(..., "Metric")）。
+# 导入失败（如测试副本缺依赖）则回退为纯 AST 检查，不影响门禁。
+sys.path.insert(0, str(root))
+try:
+    import kernel.metrics as metrics_mod
+    MetricCls = metrics_mod.Metric
+    for name in vars(metrics_mod):
+        obj = getattr(metrics_mod, name)
+        if isinstance(obj, MetricCls):
+            forbidden = sorted(set(obj.labels) - allowed)
+            if forbidden:
+                errors.append(
+                    f"kernel/metrics.py:{name}: dynamic Metric has forbidden labels "
+                    f"{', '.join(forbidden)}"
+                )
+except Exception:
+    pass
 
 if errors:
     raise SystemExit("\n".join(errors))

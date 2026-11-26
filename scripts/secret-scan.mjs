@@ -85,7 +85,14 @@ function looksLikeCredential(value) {
 }
 
 function textFiles(root, gitFlags) {
-  const output = execFileSync("git", ["ls-files", "-z", ...gitFlags], { cwd: root }).toString("utf8");
+  let output;
+  try {
+    output = execFileSync("git", ["ls-files", "-z", ...gitFlags], { cwd: root }).toString("utf8");
+  } catch {
+    // 无 .git 的导出/发布树：不得静默回退为“扫描 0 文件、0 命中、0 退出”（等于没扫）。
+    // 返回空列表，由调用方按“文件数为 0”统一报错非零退出。
+    return [];
+  }
   return [...new Set(output.split("\0"))]
     .filter(Boolean)
     .map((relative) => path.join(root, relative))
@@ -132,12 +139,17 @@ export function scanTrackedFiles(root) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const files = textFiles(root, ["--cached", "--others", "--exclude-standard"]);
-  const hits = scanFiles(root, files);
-  if (hits.length) {
-    for (const file of hits) console.error(`FAIL  明文鉴权 token: ${file}`);
+  if (files.length === 0) {
+    console.error("SECRET_SCAN_FAILED: no text files to scan (not a git checkout or no tracked text files)");
     process.exitCode = 1;
   } else {
-    console.log(`SECRET_SCAN_PASSED (${files.length} text files, 0 hits)`);
+    const hits = scanFiles(root, files);
+    if (hits.length) {
+      for (const file of hits) console.error(`FAIL  明文鉴权 token: ${file}`);
+      process.exitCode = 1;
+    } else {
+      console.log(`SECRET_SCAN_PASSED (${files.length} text files, 0 hits)`);
+    }
   }
 }
 

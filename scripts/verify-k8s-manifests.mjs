@@ -209,10 +209,12 @@ export function verifyK8sManifests(documents) {
     check(port?.name && equal(service?.ports, [{ name: port.name, port: port.containerPort, targetPort: port.name }])
       && (service?.type ?? "ClusterIP") === "ClusterIP" && !service?.externalIPs?.length
       && (service?.clusterIP === "None") === datastore, `${name} must have the contract's internal Service and port`);
-    check(podSpec && !podSpec.hostNetwork && podSpec.containers?.length === 1
-      && ![...podSpec.containers, ...(podSpec.initContainers ?? [])]
-        .some((item) => item.ports?.some((p) => p.hostPort !== undefined)),
-    `${name} must run in an isolated Pod with no host port`);
+    const allItems = [...(podSpec?.containers ?? []), ...(podSpec?.initContainers ?? [])];
+    check(podSpec && !podSpec.hostNetwork && !podSpec.hostPID && !podSpec.hostIPC
+      && podSpec.containers?.length === 1
+      && !allItems.some((item) => item.securityContext?.privileged)
+      && !allItems.some((item) => item.ports?.some((p) => p.hostPort !== undefined)),
+    `${name} must run in an isolated Pod with no host port or privileged container`);
     if (name === KERNEL) {
       check(Number.isInteger(spec?.replicas) && spec.replicas >= 2
         && podSpec?.serviceAccountName === SCALER && podSpec?.automountServiceAccountToken !== false,

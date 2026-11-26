@@ -68,13 +68,18 @@ export function verifySecurityHardening(yaml, root = ROOT) {
   const auxPod = auxDocs.find((d) => d?.kind === "Deployment" && d.metadata?.name === "otel-collector")
     ?.spec?.template?.spec;
   const auxCtx = auxPod?.securityContext;
-  const auxSec = auxPod?.containers?.[0]?.securityContext;
+  const auxContainers = [...(auxPod?.initContainers ?? []), ...(auxPod?.containers ?? [])];
   check(auxPod?.automountServiceAccountToken === false
     && auxCtx?.runAsNonRoot === true && auxCtx.runAsUser === 10001 && auxCtx.runAsGroup === 10001,
   "K8s otel-collector must be non-root and must not mount service account tokens");
-  check(auxSec?.readOnlyRootFilesystem === true && auxSec.allowPrivilegeEscalation === false
-    && equal(auxSec.capabilities, { drop: ["ALL"] }) && !auxSec.privileged
-    && !auxPod.hostNetwork && !auxPod.containers?.[0]?.ports?.some((p) => p.hostPort !== undefined),
+  check(auxContainers.length > 0 && auxContainers.every((c) => {
+    const s = c?.securityContext;
+    return s?.readOnlyRootFilesystem === true && s.allowPrivilegeEscalation === false
+      && equal(s.capabilities, { drop: ["ALL"] }) && !s.privileged
+      && !Object.hasOwn(s, "seccompProfile") && !Object.hasOwn(s, "runAsUser")
+      && !Object.hasOwn(s, "runAsNonRoot");
+  }) && !auxPod.hostNetwork && !auxPod.hostPID && !auxPod.hostIPC
+    && !auxContainers.some((c) => c.ports?.some((p) => p.hostPort !== undefined)),
   "K8s otel-collector must use a read-only root, drop all capabilities and avoid host namespaces");
 
   for (const name of WORKLOADS) {
@@ -94,12 +99,23 @@ export function verifySecurityHardening(yaml, root = ROOT) {
     check(context?.runAsNonRoot === true && context.runAsUser === 10001 && context.runAsGroup === 10001
       && equal(context.seccompProfile, { type: "Localhost", localhostProfile: "uh/seccomp.json" }),
     `K8s ${name} must set a non-root pod identity and Localhost seccomp`);
+    // 独立审查 P1-2：initContainers 与 containers 均须受相同安全上下文加固；
+    // 显式禁止 hostPID/hostIPC/hostNetwork 与 hostPath 挂载根目录 "/"。
+    check(!pod?.hostPID && !pod?.hostIPC && !pod?.hostNetwork,
+      `K8s ${name} must not use host PID/IPC/network namespaces`);
+    check(!pod?.volumes?.some((volume) => volume.hostPath && volume.hostPath.path === "/"),
+      `K8s ${name} must not mount a hostPath volume at "/"`);
+    const allContainers = [...(pod?.initContainers ?? []), ...(pod?.containers ?? [])];
+    check(allContainers.length > 0, `K8s ${name} must declare at least one container`);
+    for (const c of allContainers) {
+      const security = c?.securityContext;
+      check(security?.readOnlyRootFilesystem === true && security.allowPrivilegeEscalation === false
+        && equal(security.capabilities, { drop: ["ALL"] }) && !security.privileged
+        && !Object.hasOwn(security, "seccompProfile") && !Object.hasOwn(security, "runAsUser")
+        && !Object.hasOwn(security, "runAsNonRoot"),
+        `K8s ${name} container ${c.name ?? "<unnamed>"} must be locked down`);
+    }
     const container = pod?.containers?.[0];
-    const security = container?.securityContext;
-    check(security?.readOnlyRootFilesystem === true && security.allowPrivilegeEscalation === false
-      && equal(security.capabilities, { drop: ["ALL"] }) && !security.privileged
-      && !Object.hasOwn(security, "seccompProfile") && !Object.hasOwn(security, "runAsUser")
-      && !Object.hasOwn(security, "runAsNonRoot"), `K8s ${name} must lock down its container`);
     check(["requests", "limits"].every((key) => container?.resources?.[key]?.cpu
       && container.resources[key].memory), `K8s ${name} must set CPU/memory requests and limits`);
     check(pod?.volumes?.some((volume) => volume.name === "tmp" && volume.emptyDir?.medium === "Memory"
