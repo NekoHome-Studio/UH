@@ -810,19 +810,32 @@ def create_app() -> FastAPI:
         # 独立审查 P2-4：契约声明 getSession/closeSession 但实现缺失。
         # 记录会话元数据供 GET /sessions/{id} 返回（Session schema 要求 created_at/status）。
         app.state.session_meta[sid] = {"created_at": now, "status": "active"}
-        await app.state.session_registry.register(sid, client_id)
+        await app.state.session_registry.register(sid, client_id, created_at=now, status="active")
         response.set_cookie("uh_client_id", _client_cookie_value(client_id), httponly=True, samesite="lax")
         return _envelope({"session_id": sid, "client_id": _client_cookie_value(client_id), "status": "active", "created_at": now})
 
-    def _session_guard(request: Request, session_id: str):
-        """会话归属校验，与 send_message 同口径（双因子：token + client_id）。"""
-        if not (_truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))):
-            return None
-        owner = app.state.session_owners.get(session_id)
-        if owner is None:
+    async def _session_guard(request: Request, session_id: str):
+        """会话归属校验，与 send_message 同口径（双因子：token + client_id）。
+
+        M3 独立复审 P1：原实现三处 fail-open——
+        (a) 本地无属主即放行（多副本下 B 不认识 A 建的会话）；
+        (b) 缺 client_id 即放行（严格模式要求身份）；
+        (c) 不查共享注册表，跨副本归属无从校验。
+        现统一：严格模式必须带 client_id，属主从「本地 → 共享注册表」取，
+        取不到属主则拒绝（无法验证归属时不得放行）。
+        """
+        strict = _strict_client_identity()
+        if not (strict and _truthy(os.environ.get("UH_AUTH_REQUIRED")) and not _truthy(os.environ.get("UH_LOCAL_MODE"))):
             return None
         client_id = _request_client_id(request)
-        if client_id is not None and client_id != owner:
+        if client_id is None:
+            return Response(content=json.dumps(_envelope(error=_error_payload(
+                "UH-USR-1002", "需要有效的 client_id 身份凭据")), ensure_ascii=False),
+                status_code=403, media_type="application/json")
+        owner = app.state.session_owners.get(session_id)
+        if owner is None:
+            owner = await app.state.session_registry.owner(session_id)
+        if owner is None or client_id != owner:
             return Response(content=json.dumps(_envelope(error=_error_payload(
                 "UH-USR-1002", "无权访问会话", detail={"resource": "session", "session_id": session_id})),
                 ensure_ascii=False), status_code=403, media_type="application/json")
@@ -831,20 +844,19 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/sessions/{session_id}")
     async def get_session(session_id: str, request: Request):
         """契约 openapi.yaml getSession：获取会话详情。"""
-        meta = app.state.session_meta.get(session_id)
-        if meta is None and not await app.state.session_registry.exists(session_id):
+        # 状态以共享注册表为准（关闭状态跨副本一致）；本地 meta 仅作单进程回退。
+        state = await app.state.session_registry.state(session_id)
+        meta = app.state.session_meta.get(session_id) or {}
+        if state is None and not meta:
             return Response(content=json.dumps(_envelope(error=_error_payload(
                 "UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})),
                 ensure_ascii=False), status_code=404, media_type="application/json")
-        denied = _session_guard(request, session_id)
+        denied = await _session_guard(request, session_id)
         if denied is not None:
             return denied
-        meta = meta or {}
-        return _envelope({
-            "session_id": session_id,
-            "status": meta.get("status", "active"),
-            "created_at": meta.get("created_at", datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")),
-        })
+        status = (state or {}).get("status") or meta.get("status") or "active"
+        created_at = (state or {}).get("created_at") or meta.get("created_at") or ""
+        return _envelope({"session_id": session_id, "status": status, "created_at": created_at})
 
     @app.delete("/api/v1/sessions/{session_id}")
     async def close_session(session_id: str, request: Request):
@@ -854,10 +866,12 @@ def create_app() -> FastAPI:
             return Response(content=json.dumps(_envelope(error=_error_payload(
                 "UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})),
                 ensure_ascii=False), status_code=404, media_type="application/json")
-        denied = _session_guard(request, session_id)
+        denied = await _session_guard(request, session_id)
         if denied is not None:
             return denied
         await app.state.memory.clear(session_id)
+        # M3 独立复审 P1：关闭状态必须跨副本传播——写共享注册表，不只改本地 meta。
+        await app.state.session_registry.close(session_id)
         if meta is not None:
             meta["status"] = "closed"
         log_event(log, logging.INFO, "kernel.session.closed", session_id=session_id)
@@ -869,6 +883,11 @@ def create_app() -> FastAPI:
         # M3-9 多进程：本地快取未命中时查共享注册表（别的 worker 建的会话）
         if session_id not in app.state.sessions and not await app.state.session_registry.exists(session_id):
             return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "会话不存在", detail={"resource": "session", "session_id": session_id})), ensure_ascii=False), status_code=404, media_type="application/json")
+        # M3 独立复审 P1：已关闭会话不得再提交消息（原实现只查存在性）。
+        # 状态取共享注册表，跨副本一致。
+        _state = await app.state.session_registry.state(session_id)
+        if (_state or {}).get("status") == "closed" or app.state.session_meta.get(session_id, {}).get("status") == "closed":
+            return Response(content=json.dumps(_envelope(error=_error_payload("UH-USR-1003", "会话已关闭", detail={"resource": "session", "session_id": session_id})), ensure_ascii=False), status_code=409, media_type="application/json")
         strict_identity = _strict_client_identity()
         client_id = _request_client_id(request)
         if client_id is None and strict_identity:
