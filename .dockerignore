@@ -8,3 +8,6 @@
 !docs/contracts/events.schema.json
 !docs/contracts/manifest.schema.json
 !docs/contracts/manifest/*.schema.json
+# M3 独立复审 P1：SBOM 生成器需进入构建上下文（白名单模式下不在列表即被排除，
+# COPY 会因源文件不存在而失败）。
+!scripts/generate-sbom.mjs

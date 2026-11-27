@@ -1,9 +1,19 @@
+# M3 独立复审 P1：LABEL 声明了 /app/dist/sbom.cdx.json，但原构建只 COPY 生成脚本
+# 从未运行它——按该 Dockerfile 构建的镜像不含 SBOM，M3-8 镜像验收条件不成立。
+# 用独立 node 阶段生成清单，再 COPY 进运行镜像。
+FROM node:22-slim AS sbom
+WORKDIR /src
+COPY pyproject.toml ./
+COPY scripts/generate-sbom.mjs ./scripts/
+RUN node scripts/generate-sbom.mjs && test -s dist/sbom.cdx.json
 FROM python:3.12-slim-bookworm AS build
 WORKDIR /src
 COPY pyproject.toml ./
 COPY kernel/ ./kernel/
 COPY deploy/security/seccomp.json ./deploy/security/seccomp.json
-ARG UH_INSTALL_EXTRAS=compose
+# M3 独立复审 P1：默认含 otel——K8s 清单默认开启 UH_OTEL_ENABLED，
+# 只装 compose extra 会让内核导入失败并静默降级为无追踪，链路在发送端就断了。
+ARG UH_INSTALL_EXTRAS=compose,otel
 RUN python -m pip install --no-cache-dir --prefix=/install ".[${UH_INSTALL_EXTRAS}]"
 
 FROM python:3.12-slim-bookworm AS runtime
@@ -20,8 +30,9 @@ COPY --from=build /install/ /usr/local/
 COPY --from=build /src/kernel/ ./kernel/
 COPY ui/ ./ui/
 COPY docs/contracts/ ./docs/contracts/
-# M3-8 供应链：镜像内携带 SBOM（构建阶段由 scripts/generate-sbom.mjs 产出 dist/sbom.cdx.json）
-COPY scripts/generate-sbom.mjs ./scripts/generate-sbom.mjs
+# M3-8 供应链：SBOM 产物随镜像落地（由上方 sbom 阶段生成），
+# 与下方 LABEL org.opencontainers.image.sbom 声明的路径一致。
+COPY --from=sbom /src/dist/sbom.cdx.json ./dist/sbom.cdx.json
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

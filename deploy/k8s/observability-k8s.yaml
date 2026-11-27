@@ -39,7 +39,8 @@ spec:
         fsGroup: 10001
       containers:
         - name: collector
-          image: otel/opentelemetry-collector-contrib:latest
+          # M3 独立复审 P1：固定版本——latest 浮动不可复现，且新版已移除 logging exporter。
+          image: otel/opentelemetry-collector-contrib:0.115.0
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -68,7 +69,9 @@ data:
     processors:
       batch: {}
     exporters:
-      logging: { loglevel: warn }
+      # M3 独立复审 P1：logging exporter 自 v0.111.0 移除（上游 issue #11337），
+      # 沿用会让 collector 加载 pipeline 失败。改用官方替代 debug。
+      debug: { verbosity: normal }
     service:
       pipelines:
-        traces: { receivers: [otlp], processors: [batch], exporters: [logging] }
+        traces: { receivers: [otlp], processors: [batch], exporters: [debug] }
