@@ -721,6 +721,12 @@ def trusted_git_source(monkeypatch, tmp_path):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
     if os.name == "nt":
+        # M3 复审 P2：启动环境可能残留成对不全的 GIT_CONFIG_* 键（例如只有
+        # GIT_CONFIG_COUNT 而 VALUE_0 为空），使后续所有子进程（node → git）
+        # 报 missing config value。先清空继承值，再写入**完整**的三元组，
+        # 保证任何时刻环境里要么没有这些键、要么三件套齐全。
+        for inherited in [k for k in os.environ if k.startswith("GIT_CONFIG_")]:
+            monkeypatch.delenv(inherited, raising=False)
         monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
         monkeypatch.setenv("GIT_CONFIG_KEY_0", "http.sslBackend")
         monkeypatch.setenv("GIT_CONFIG_VALUE_0", "openssl")

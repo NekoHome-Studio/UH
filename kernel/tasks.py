@@ -245,6 +245,28 @@ class TaskManager:
         await self._emit(task, "task.cancelled", {"reason": reason, "completed_steps": completed})
         return {"task_id": task_id, "reason": reason, "completed_steps": completed}
 
+    async def cancel_session(self, session_id: str, reason: str = "session_closed") -> int:
+        """取消某会话的全部在途任务（M3 复审 P1：关闭会话必须先停写入）。
+
+        复审要求「核验在途任务是否会在关闭后回写 L0」——实测会：关闭时
+        memory.clear() 之后，仍在跑的 chat 任务继续追加 L0，造成关闭后仍有
+        短期记忆残留。故关闭流程改为：标记 closed（挡新消息）→ 取消在途任务
+        → 最后清 L0。返回取消的任务数。
+        """
+        active = {"queued", "running", "cancelling"}
+        victims = [
+            task_id for task_id, task in list(self.tasks.items())
+            if task.get("session_id") == session_id and task.get("status") in active
+        ]
+        cancelled = 0
+        for task_id in victims:
+            try:
+                await self.cancel(task_id, reason=reason)
+                cancelled += 1
+            except Exception:  # noqa: BLE001 - 已终态竞态不应阻断关闭
+                continue
+        return cancelled
+
     def resolve_confirmation(self, task_id: str, token: str, decision: str, operator: str = "user"):
         """REST/CLI 确认入口：裁决令牌并唤醒等待中的任务。"""
         req = self.confirmations.resolve(token, decision, operator=operator, task_id=task_id)

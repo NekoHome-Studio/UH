@@ -865,7 +865,12 @@ class PluginDriver:
             checkout = Path(tempfile.mkdtemp(prefix="uh-plugin-git-"))
             try:
                 subprocess.run(
-                    ["git", "-c", "http.followRedirects=false", "clone", "--depth", "1", "--", url, str(checkout)],
+                    # M3 复审 P2 顺带发现的真缺陷：未禁换行转换时，Windows（或任何全局
+            # core.autocrlf=true 的机器）clone 会把 LF 改写成 CRLF，文件内容哈希
+            # 与包内声明的 SHA-256 不符，git 源安装必然失败（UH-KRN-2010）。
+            # 内容寻址的校验必须基于字节，这里显式关闭转换。
+            ["git", "-c", "http.followRedirects=false", "-c", "core.autocrlf=false",
+             "clone", "--depth", "1", "--", url, str(checkout)],
                     check=True, capture_output=True, timeout=120, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
                 )
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:

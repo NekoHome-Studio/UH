@@ -1,9 +1,12 @@
 name: contracts
+# M3 独立复审 P2：paths 原漏 deploy/k8s、deploy/security、desktop 及其
+# 对应校验脚本——单改这些目录时 contracts.yml 不触发，本地全量门禁能发现的
+# 问题（J/M/L 项）在 CI 侧静默通过。
 on:
   push:
-    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "Dockerfile", ".dockerignore", ".env.example", "docker-compose.yaml", "deploy/observability/**", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", "scripts/verify-compose-exposure.mjs", "scripts/verify-metrics-cardinality.mjs", "scripts/secret-scan.mjs", ".github/workflows/contracts.yml"]
+    paths: ["docs/contracts/**", "deploy/k8s/**", "deploy/security/**", "deploy/observability/**", "desktop/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "Dockerfile", ".dockerignore", ".env.example", "docker-compose.yaml", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", "scripts/verify-compose-exposure.mjs", "scripts/verify-k8s-manifests.mjs", "scripts/verify-security-hardening.mjs", "scripts/verify-desktop.mjs", "scripts/verify-metrics-cardinality.mjs", "scripts/check-doc-links.mjs", "scripts/generate-sbom.mjs", "scripts/render-seccomp-profile.mjs", "scripts/secret-scan.mjs", ".github/workflows/contracts.yml"]
   pull_request:
-    paths: ["docs/contracts/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "Dockerfile", ".dockerignore", ".env.example", "docker-compose.yaml", "deploy/observability/**", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", "scripts/verify-compose-exposure.mjs", "scripts/verify-metrics-cardinality.mjs", "scripts/secret-scan.mjs", ".github/workflows/contracts.yml"]
+    paths: ["docs/contracts/**", "deploy/k8s/**", "deploy/security/**", "deploy/observability/**", "desktop/**", "kernel/**", "tests/**", "ui/**", "examples/plugins/**", "pyproject.toml", "Dockerfile", ".dockerignore", ".env.example", "docker-compose.yaml", "scripts/validate-contracts.mjs", "scripts/review-precheck.mjs", "scripts/verify-all.mjs", "scripts/verify-compose-exposure.mjs", "scripts/verify-k8s-manifests.mjs", "scripts/verify-security-hardening.mjs", "scripts/verify-desktop.mjs", "scripts/verify-metrics-cardinality.mjs", "scripts/check-doc-links.mjs", "scripts/generate-sbom.mjs", "scripts/render-seccomp-profile.mjs", "scripts/secret-scan.mjs", ".github/workflows/contracts.yml"]
 jobs:
   validate:
     runs-on: ubuntu-latest

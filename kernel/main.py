@@ -907,9 +907,16 @@ def create_app() -> FastAPI:
         denied = await _session_guard(request, session_id)
         if denied is not None:
             return denied
-        await app.state.memory.clear(session_id)
-        # M3 独立复审 P1：关闭状态必须跨副本传播——写共享注册表，不只改本地 meta。
+        # M3 独立复审 P1：关闭顺序必须是「先挡新消息 → 再停在途任务 → 最后清 L0」。
+        # 反过来的话，仍在跑的 chat 任务会在 clear 之后继续追加短期记忆，
+        # 关闭后 L0 仍有残留（复审要求核验的正是这一点，实测确会）。
+        # 状态写共享注册表，跨副本一致。
         await app.state.session_registry.close(session_id)
+        try:
+            await app.state.tasks.cancel_session(session_id)
+        except Exception:  # noqa: BLE001 - 取消失败不应阻断关闭
+            log_event(log, logging.WARNING, "kernel.session.cancel_failed", session_id=session_id)
+        await app.state.memory.clear(session_id)
         if meta is not None:
             meta["status"] = "closed"
         log_event(log, logging.INFO, "kernel.session.closed", session_id=session_id)
