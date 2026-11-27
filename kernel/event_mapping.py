@@ -118,6 +118,24 @@ def _schema() -> dict[str, Any]:
 
 _VALIDATOR = Draft7Validator(_schema()) if Draft7Validator is not None else None
 
+# 形状缓存：(事件名, payload 键, 值类型名元组) → 该形状已通过完整校验。
+# 为什么需要：map() 在 _emit 热路径上被调用，mock 流式回答按字符发 delta 事件，
+# 单个任务会产生数千次全量 JSON Schema 校验（cProfile 实测占单任务 CPU 的 80%）。
+# 同一事件名 + 同一 payload 键集合 + 同一值类型，其 schema 判定结果必然相同，
+# 故首次校验通过后缓存形状即可，语义不变（值仍受类型约束，仅跳过重复遍历）。
+_SHAPE_PASSED: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+
+
+def _shape_key(value: Mapping[str, Any]) -> tuple[str, tuple[tuple[str, str], ...]] | None:
+    event = value.get("event")
+    payload = value.get("payload")
+    if not isinstance(event, str) or not isinstance(payload, Mapping):
+        return None
+    return (
+        event,
+        tuple(sorted((str(k), type(v).__name__) for k, v in payload.items())),
+    )
+
 
 def validate_external_event(event: Mapping[str, Any], *, previous_event_id: int | None = None) -> dict[str, Any]:
     """校验一个完整外部信封并返回副本。
@@ -128,11 +146,15 @@ def validate_external_event(event: Mapping[str, Any], *, previous_event_id: int 
     value = copy.deepcopy(dict(event))
     if _VALIDATOR is None:
         raise EventValidationError("缺少 jsonschema 依赖，无法校验外部事件")
-    errors = sorted(_VALIDATOR.iter_errors(value), key=lambda error: list(error.path))
-    if errors:
-        first = errors[0]
-        path = ".".join(str(p) for p in first.path) or "<root>"
-        raise EventValidationError(f"非法外部事件 {path}: {first.message}")
+    shape = _shape_key(value)
+    if shape is None or shape not in _SHAPE_PASSED:
+        errors = sorted(_VALIDATOR.iter_errors(value), key=lambda error: list(error.path))
+        if errors:
+            first = errors[0]
+            path = ".".join(str(p) for p in first.path) or "<root>"
+            raise EventValidationError(f"非法外部事件 {path}: {first.message}")
+        if shape is not None:
+            _SHAPE_PASSED.add(shape)
     if previous_event_id is not None and value["event_id"] != previous_event_id + 1:
         raise EventValidationError(
             f"event_id 必须单调且无空洞: previous={previous_event_id}, current={value['event_id']}"

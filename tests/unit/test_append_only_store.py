@@ -73,3 +73,45 @@ def test_long_term_roundtrip_after_append(ltm):
     ltm.write("可检索的条目", session_id="uh_ses_probe0000000000000002")
     rows = ltm.recall("可检索", top_k=3)
     assert any("可检索" in str(r.get("content", "")) for r in rows)
+
+
+# ---------- 全仓审计 #3：同 ID 替换后倒排索引必须失效 ----------
+def test_upsert_same_id_refreshes_inverted_index(tmp_path):
+    """同 id 更新文本后，查询新词必须能召回（原实现仅凭文档数判断重建）。"""
+    store = LocalVectorStore(path=tmp_path / "vec.json")
+    store.add(Document("a1", "旧文本 无关内容", "src", "long-term"))
+    store.add(Document("a2", "另一篇 别的词", "src", "long-term"))
+    # 先查询建立索引
+    store.query("旧文本", top_k=5)
+    # 同 id 替换：文档总数不变
+    store.add(Document("a1", "全新词汇 新鲜内容", "src", "long-term"))
+    hits = store.query("全新词汇", top_k=5)
+    ids = [d.document_id for d, _ in hits]
+    assert "a1" in ids, f"替换后索引未失效，召回 {ids}"
+
+
+# ---------- 全仓审计 #5：写入失败不得静默成功 ----------
+def test_vector_store_append_failure_raises(tmp_path, monkeypatch):
+    store = LocalVectorStore(path=tmp_path / "vec.json")
+    store.add(Document("d1", "初始", "src", "long-term"))
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("pathlib.Path.open", boom)
+    with pytest.raises(OSError):
+        store.add(Document("d2", "写不进去", "src", "long-term"))
+
+
+def test_long_term_append_failure_raises(monkeypatch, tmp_path):
+    monkeypatch.setenv("UH_LONG_TERM_STORE", str(tmp_path / "ltm.json"))
+    monkeypatch.setenv("UH_MEMORY_MASTER_KEY", "")
+    ltm = create_long_term_memory()
+    ltm.write("先写一条", session_id="uh_ses_fail00000000000000001")
+
+    def boom(*args, **kwargs):
+        raise OSError("read-only fs")
+
+    monkeypatch.setattr("pathlib.Path.open", boom)
+    with pytest.raises(OSError):
+        ltm.write("这条应报错", session_id="uh_ses_fail00000000000000001")

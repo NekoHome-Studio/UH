@@ -99,3 +99,33 @@ def test_created_at_comes_from_registry_not_query_time(monkeypatch, tmp_path):
         sid, cid, original = created["session_id"], created["client_id"], created["created_at"]
         seen = b.get(f"/api/v1/sessions/{sid}", headers=h(cid))
         assert seen.json()["data"]["created_at"] == original
+
+
+# ---------- 全仓审计 #1：消息与短期记忆端点越权 ----------
+@pytest.mark.parametrize("path_tpl", [
+    "/api/v1/sessions/{sid}/messages",
+    "/api/v1/memory/short-term?session_id={sid}",
+])
+def test_message_and_memory_endpoints_require_ownership(monkeypatch, tmp_path, path_tpl):
+    """持有全局 token 但无该会话身份时，不得读取他人消息/短期记忆。"""
+    app, _ = _app_pair(monkeypatch, tmp_path)
+    with TestClient(app) as c:
+        sid = _create(c)["session_id"]
+        c.cookies.clear()
+        r = c.get(path_tpl.format(sid=sid), headers=h())
+        assert r.status_code == 403, r.text
+        assert r.json()["error"]["code"] == "UH-USR-1002"
+
+
+def test_owner_can_still_read_messages_and_memory(monkeypatch, tmp_path):
+    """合法属主（带 client_id）读取不受影响。"""
+    app, _ = _app_pair(monkeypatch, tmp_path)
+    with TestClient(app) as c:
+        created = _create(c)
+        sid, cid = created["session_id"], created["client_id"]
+        c.post(f"/api/v1/sessions/{sid}/messages", headers=h(cid),
+               json={"content": "属主自读", "mode": "chat"})
+        for path in (f"/api/v1/sessions/{sid}/messages?page=1&page_size=20",
+                     f"/api/v1/memory/short-term?session_id={sid}"):
+            r = c.get(path, headers=h(cid))
+            assert r.status_code == 200, (path, r.text)

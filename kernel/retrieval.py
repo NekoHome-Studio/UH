@@ -174,15 +174,39 @@ class LocalVectorStore:
             # 内存模式仍可用于只读/沙箱环境。
             pass
 
+    def _migrate_legacy_if_needed(self) -> None:
+        """旧「单个 JSON 数组」文件在首次追加前迁移为 JSONL。
+
+        全仓审计 #2：原实现直接往数组文本末尾追加 JSONL 行，文件变成
+        "[{...},{...}]\n{...}" 的混合体；下次 _load 因以 "[" 开头而整体
+        json.loads 失败，**所有历史条目被置空**。必须在追加前完成迁移。
+        迁移走临时文件 + 原子替换，避免中途失败留下半个文件。
+        """
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                head = handle.read(1)
+        except (FileNotFoundError, OSError):
+            return
+        if head.strip() != "[":
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".migrating")
+        with tmp.open("w", encoding="utf-8") as handle:
+            for doc in self.documents:
+                handle.write(json.dumps(asdict(doc), ensure_ascii=False) + "\n")
+        os.replace(tmp, self.path)
+
     def _append(self, document: Document) -> None:
         """单条追加，O(1)。原实现对每次写入都全量重写 JSON——文档累积到
-        上千条后单次 add 达 ~190ms，且随存量线性增长（O(n²) 总成本）。"""
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(asdict(document), ensure_ascii=False) + "\n")
-        except OSError:
-            pass
+        上千条后单次 add 达 ~190ms，且随存量线性增长（O(n²) 总成本）。
+
+        全仓审计 #5：写盘失败**不得静默吞掉**——否则调用方以为已持久化，
+        重启后数据消失且无任何信号。这里让 OSError 向上抛出。
+        """
+        self._migrate_legacy_if_needed()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(asdict(document), ensure_ascii=False) + "\n")
 
     def add(self, document: Document) -> Document:
         self._guard_access()
@@ -190,6 +214,9 @@ class LocalVectorStore:
         # 内存侧去重保持最新一条；磁盘侧追加，由 _load 归并时后写覆盖
         self.documents = [d for d in self.documents if d.document_id != document.document_id]
         self.documents.append(document)
+        # 全仓审计 #3：同 id 替换时文档总数不变，仅凭长度判断会沿用旧索引，
+        # 使 query 拿到过期 token→下标映射（新文本召回不到、旧映射指向别的文档）。
+        self._index_dirty = True
         self._append(document)
         return document
 
@@ -210,7 +237,7 @@ class LocalVectorStore:
         # M3-9 性能：原实现对全部文档算 128 维余弦，纯 CPU 且随语料线性增长，
         # 100 并发下饱和 GIL（实测 search P95 >55s）。先用倒排索引取候选集，
         # 只对含查询词的文档算余弦；无命中时退回全量（保持召回语义不变）。
-        if getattr(self, "_index_size", -1) != len(self.documents):
+        if getattr(self, "_index_size", -1) != len(self.documents) or getattr(self, "_index_dirty", False):
             self._rebuild_index()
         tokens = self._tokens_of(query)
         candidates: set[int] = set()

@@ -450,12 +450,22 @@ class TaskManager:
                     await self._emit(task, "task.failed", {"error": result.payload.get("error", {"code": "UH-CAP-5021", "message": "编排超时", "retryable": True})})
                     return
                 await self._emit(task, "task.degraded", {"reason_code": result.payload.get("error_code", "UH-CAP-5021"), "module": "orchestration", "description": "编排不可用，降级为普通对话"})
+                # 全仓审计 #4：原实现把 delta 流丢弃，直接用**用户输入**当最终回答，
+                # 并把它写成 assistant 长期记忆（语义颠倒）；且缺 step.started，
+                # UI 状态机停在 routing 直到终态。此处补齐：收集 delta 形成回答、
+                # 发配对 step 事件、assistant 记忆写回答本身。
+                await self._emit(task, "step.started", {"step_id": "st_degraded", "module": "llm", "name": "generate"})
+                parts: list[str] = []
                 async for delta in self.llm.stream_chat([{"role": "user", "content": content}]):
-                    await self._emit(task, "delta", {"text": delta, "index": 0})
-                await self._emit(task, "task.finished", {"final_result": {"content": content}, "duration_ms": 0})
+                    parts.append(delta)
+                    await self._emit(task, "delta", {"text": delta, "index": len(parts) - 1})
+                answer = "".join(parts)
+                await self.memory.append(session_id, "assistant", answer)
+                await self._emit(task, "step.finished", {"step_id": "st_degraded", "module": "llm", "status": "done", "duration_ms": 0})
+                await self._emit(task, "task.finished", {"final_result": {"content": answer}, "duration_ms": 0})
                 if memory_recall:
                     await self._long_term_write(content, session_id, context, role="user")
-                    await self._long_term_write(content, session_id, context, role="assistant")
+                    await self._long_term_write(answer, session_id, context, role="assistant")
                 return
             answer = result.payload.get("answer", "")
             await self.memory.append(session_id, "assistant", answer)

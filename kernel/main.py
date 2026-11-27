@@ -688,16 +688,27 @@ def create_app() -> FastAPI:
 
     @app.get("/memory/short-term")
     @app.get("/api/v1/memory/short-term")
-    async def get_short_term_memory(session_id: str):
+    async def get_short_term_memory(session_id: str, request: Request):
+        # 全仓审计 #1：原实现无任何归属校验——持有全局 Bearer token 且知道
+        # 他人 session_id 即可读取其短期记忆。token 只证明可访问服务，
+        # 不证明拥有该会话。与 GET/DELETE /sessions/{id} 同口径守卫。
+        denied = await _session_guard(request, session_id)
+        if denied is not None:
+            return denied
         entries = await app.state.memory.get_context(session_id)
         return _envelope({"session_id": session_id, "entries": entries})
 
     @app.get("/api/v1/sessions/{session_id}/messages")
     async def list_messages(
         session_id: str,
+        request: Request,
         page: int = Query(1, ge=1),
         page_size: int = Query(20, ge=1, le=100),
     ):
+        # 全仓审计 #1：同 get_short_term_memory，原实现可跨会话读取对话内容。
+        denied = await _session_guard(request, session_id)
+        if denied is not None:
+            return denied
         entries = await app.state.memory.get_context(session_id)
         total = len(entries)
         start = (page - 1) * page_size

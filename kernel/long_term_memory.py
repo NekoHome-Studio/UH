@@ -225,15 +225,38 @@ class LongTermMemory:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps([asdict(e) for e in self.entries], ensure_ascii=False), encoding="utf-8")
 
+    def _migrate_legacy_if_needed(self) -> None:
+        """旧「单个 JSON 数组」文件在首次追加前迁移为 JSONL。
+
+        全仓审计 #2：直接往数组文本末尾追加 JSONL 会得到
+        "[{...}]\n{...}" 的混合体，下次 _load 因以 "[" 开头整体解析失败，
+        **全部历史记忆被置空**。迁移用临时文件 + 原子替换。
+        """
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                head = handle.read(1)
+        except (FileNotFoundError, OSError):
+            return
+        if head.strip() != "[":
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".migrating")
+        with tmp.open("w", encoding="utf-8") as handle:
+            for item in self.entries:
+                handle.write(json.dumps(asdict(item), ensure_ascii=False) + "\n")
+        os.replace(tmp, self.path)
+
     def _append(self, entry: LongTermEntry) -> None:
         """单条追加，O(1)。原实现每次写入全量重写整个 entries 列表，
-        存量增长后单次写入线性变慢（O(n²) 总成本）。"""
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
-        except OSError:
-            pass
+        存量增长后单次写入线性变慢（O(n²) 总成本）。
+
+        全仓审计 #5：写盘失败必须向上抛——静默吞掉会让调用方以为已持久化，
+        重启后记忆消失且无日志、无指标、无信号。
+        """
+        self._migrate_legacy_if_needed()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
 
     def _encrypt(self, content: str) -> tuple[str, str]:
         if self._master_key is None:
