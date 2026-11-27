@@ -184,15 +184,56 @@ class LongTermMemory:
         return key
 
     def _load(self) -> None:
+        """加载条目，兼容旧「单个 JSON 数组」与新「JSONL 追加」两种格式。
+
+        JSONL 下同 entry_id 多行按后写覆盖前写归并。
+        """
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self.entries = [LongTermEntry(**item) for item in raw if isinstance(item, dict)]
-        except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+            text = self.path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
             self.entries = []
+            return
+        items: list[dict[str, Any]] = []
+        if text.lstrip().startswith("["):
+            try:
+                loaded = json.loads(text)
+            except json.JSONDecodeError:
+                loaded = []
+            items = [item for item in loaded if isinstance(item, dict)]
+        else:
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    items.append(item)
+        merged: dict[str, LongTermEntry] = {}
+        for item in items:
+            try:
+                entry = LongTermEntry(**item)
+            except TypeError:
+                continue
+            merged[entry.entry_id] = entry
+        self.entries = list(merged.values())
 
     def _save(self) -> None:
+        """全量重写（供 prune/裁剪等批量变更使用；单条写入走 _append）。"""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps([asdict(e) for e in self.entries], ensure_ascii=False), encoding="utf-8")
+
+    def _append(self, entry: LongTermEntry) -> None:
+        """单条追加，O(1)。原实现每次写入全量重写整个 entries 列表，
+        存量增长后单次写入线性变慢（O(n²) 总成本）。"""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     def _encrypt(self, content: str) -> tuple[str, str]:
         if self._master_key is None:
@@ -249,7 +290,7 @@ class LongTermMemory:
             document = Document(entry.entry_id, entry.content, f"memory:{session_id}", "long-term")
             self.vector_store.add(document)
         self.entries.append(entry)
-        self._save()
+        self._append(entry)
         return entry
 
     add = write

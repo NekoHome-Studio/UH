@@ -125,13 +125,48 @@ class LocalVectorStore:
             self._guard.access(self._module, self._namespace)
 
     def _load(self) -> None:
+        """加载文档。兼容两种磁盘格式：
+
+        - 旧：单个 JSON 数组（全量重写）
+        - 新：JSONL，每行一条（追加入库，O(1)）
+
+        JSONL 下同 document_id 的多行按**后写覆盖前写**归并——这正是
+        追加式的语义，也让多进程各自 append 时不再互相抹掉历史。
+        """
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self.documents = [Document(**item) for item in raw if isinstance(item, dict)]
-        except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+            text = self.path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
             self.documents = []
+            return
+        items: list[dict] = []
+        if text.lstrip().startswith("["):
+            try:
+                loaded = json.loads(text)
+            except json.JSONDecodeError:
+                loaded = []
+            items = [item for item in loaded if isinstance(item, dict)]
+        else:
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    items.append(item)
+        merged: dict[str, Document] = {}
+        for item in items:
+            try:
+                document = Document(**item)
+            except TypeError:
+                continue
+            merged[document.document_id] = document
+        self.documents = list(merged.values())
 
     def _save(self) -> None:
+        """全量重写（仅在批量变更/迁移时需要；单条入库走 _append）。"""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps([asdict(d) for d in self.documents], ensure_ascii=False), encoding="utf-8")
@@ -139,12 +174,23 @@ class LocalVectorStore:
             # 内存模式仍可用于只读/沙箱环境。
             pass
 
+    def _append(self, document: Document) -> None:
+        """单条追加，O(1)。原实现对每次写入都全量重写 JSON——文档累积到
+        上千条后单次 add 达 ~190ms，且随存量线性增长（O(n²) 总成本）。"""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(asdict(document), ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
     def add(self, document: Document) -> Document:
         self._guard_access()
         document.vector = self.embedding.embed(document.text)
+        # 内存侧去重保持最新一条；磁盘侧追加，由 _load 归并时后写覆盖
         self.documents = [d for d in self.documents if d.document_id != document.document_id]
         self.documents.append(document)
-        self._save()
+        self._append(document)
         return document
 
     def _tokens_of(self, text: str) -> set[str]:
