@@ -401,6 +401,15 @@ def create_mcp_app():
     if runtime is not None:
         app.add_middleware(otel.TracingMiddleware, runtime=runtime, routes=app.routes, name="mcp.receive")
 
+    @app.get("/health")
+    async def health() -> dict:
+        """M3 独立复审 P1：K8s/compose 探针依赖此端点，缺失会让能力 Pod 永不就绪。"""
+        return {"status": "ok", "role": "retrieval"}
+
+    @app.get("/ready")
+    async def ready() -> dict:
+        return {"status": "ok", "role": "retrieval"}
+
     @app.post("/mcp")
     async def handle_rpc(message: dict):
         result = await run_in_threadpool(server.handle, message)
@@ -414,4 +423,16 @@ def create_mcp_app():
 
 
 if __name__ == "__main__":
-    RetrievalMCPServer().serve_stdio_sync()
+    # M3 独立复审 P1：原 __main__ 只起 stdio，无法作为独立 Deployment 的 HTTP 服务，
+    # 远程路径 UH_RETRIEVAL_MCP_URL 也就永无对端。按 UH_MCP_TRANSPORT 选择传输，
+    # 默认 stdio 保持既有调用方式（MCPHost.from_stdio）不变。
+    if os.environ.get("UH_MCP_TRANSPORT", "stdio").lower() == "http":
+        import uvicorn
+
+        uvicorn.run(
+            create_mcp_app(), host="0.0.0.0",
+            port=int(os.environ.get("UH_MCP_PORT", "8080")),
+            access_log=False, log_level="warning",
+        )
+    else:
+        RetrievalMCPServer().serve_stdio_sync()

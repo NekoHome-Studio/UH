@@ -8,6 +8,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -323,6 +324,19 @@ def create_app() -> FastAPI:
         )
         return response.payload
 
+    # M3 独立复审 P1：编排原先只在进程内实例化，deploy 清单里 uh-langgraph 的副本数
+    # 对业务路径无意义（OOM/HPA 演练证明不了隔离）。现支持远程 MCP：
+    #   UH_ORCHESTRATION_MCP_URL / UH_ORCHESTRATION_MCP_COMMAND → 走远端
+    # 本地实例仍保留：TaskManager 的 resume/checkpoint 查询依赖它（远程模式下
+    # checkpoint 不在本进程，resume 需 sticky 或后续把 checkpoint 外置）。
+    _orch_cmd = os.environ.get("UH_ORCHESTRATION_MCP_COMMAND")
+    _orch_url = os.environ.get("UH_ORCHESTRATION_MCP_URL")
+    if _orch_cmd:
+        app.state.orchestration_host = MCPHost.from_stdio(_orch_cmd, bus=app.state.bus)
+    elif _orch_url:
+        app.state.orchestration_host = MCPHost.from_http(_orch_url, bus=app.state.bus)
+    else:
+        app.state.orchestration_host = None
     app.state.orchestration = OrchestrationService(retrieval=app.state.retrieval_server.service, llm=app.state.llm, tool_call=_workflow_tool)
 
     async def _llm_cap(req):
@@ -347,6 +361,30 @@ def create_app() -> FastAPI:
 
     async def _orchestration_cap(req):
         try:
+            host = app.state.orchestration_host
+            if host is not None:
+                # 远程模式：emit 回调无法跨进程，事件随结果返回后在此回放，
+                # 任务事件流语义与本地一致。
+                response = await host.call_tool("run", {
+                    "task_id": req.payload.get("task_id", ""),
+                    "content": req.payload.get("content", ""),
+                    "trace_id": req.trace_id,
+                    "deadline_ms": req.deadline_ms,
+                    "resume": bool(req.payload.get("resume", False)),
+                    "checkpoint_id": req.payload.get("checkpoint_id"),
+                }, trace_id=req.trace_id, deadline_ms=req.deadline_ms)
+                payload = response.get("structuredContent") if isinstance(response.get("structuredContent"), dict) else response
+                payload = dict(payload or {})
+                replay = payload.pop("events", None) or []
+                emit = req.payload.get("emit")
+                if callable(emit):
+                    for entry in replay:
+                        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                            continue
+                        outcome = emit(entry[0], entry[1])
+                        if inspect.isawaitable(outcome):
+                            await outcome
+                return Envelope(action=req.action, payload=payload, trace_id=req.trace_id, from_=req.to, to=req.from_)
             result = await app.state.orchestration.run(
                 req.payload.get("task_id", ""), req.payload.get("content", ""), trace_id=req.trace_id,
                 emit=req.payload.get("emit"), deadline_ms=req.deadline_ms,

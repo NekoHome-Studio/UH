@@ -477,3 +477,124 @@ class OrchestrationService:
 
     def checkpoint(self, task_id: str, checkpoint_id: str | None = None) -> Checkpoint | None:
         return self.store.load(task_id, checkpoint_id)
+
+class OrchestrationMCPServer:
+    """与 kernel.mcp.MCPHost 兼容的编排 MCP Server（M3 复审 P1）。
+
+    背景：原实现编排只在**内核进程内**实例化，deploy/k8s 与 compose 里
+    uh-langgraph 的副本数对业务路径无意义，OOM/HPA 演练证明不了隔离。
+    远程模式下 emit 回调无法跨进程传递，故把事件**随结果返回**，由内核侧回放，
+    保持任务事件流语义不变。
+    """
+
+    def __init__(self, service: OrchestrationService | None = None) -> None:
+        if service is None:
+            from .llm import create_llm_client
+
+            # 远程进程不持有检索/工具回调：检索走各自的 MCP 服务，
+            # 工具调用需回内核（此处留空，用到时明确报不可用而非静默降级）。
+            service = OrchestrationService(llm=create_llm_client(), tool_call=None)
+        self.service = service
+
+    def handle(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        method = request.get("method")
+        request_id = request.get("id")
+        if method == "initialize":
+            return {"jsonrpc": "2.0", "id": request_id, "result": {
+                "protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                "serverInfo": {"name": "uh-orchestration", "version": "0.1.0"}}}
+        if method in {"notifications/initialized", "notifications/cancelled"}:
+            return None
+        if method == "tools/list":
+            return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": [
+                {"name": "run", "description": "执行编排；事件随结果返回（events 数组）",
+                 "inputSchema": {"type": "object",
+                   "properties": {"task_id": {"type": "string"}, "content": {"type": "string"},
+                     "trace_id": {"type": "string"}, "deadline_ms": {"type": "integer"},
+                     "resume": {"type": "boolean"}, "checkpoint_id": {"type": "string"}},
+                   "required": ["task_id", "content"]}},
+                {"name": "checkpoint", "description": "读取任务 checkpoint",
+                 "inputSchema": {"type": "object",
+                   "properties": {"task_id": {"type": "string"}, "checkpoint_id": {"type": "string"}},
+                   "required": ["task_id"]}},
+            ]}}
+        if method == "tools/call":
+            params = request.get("params") or {}
+            name = params.get("name")
+            args = params.get("arguments") or {}
+            try:
+                if name == "run":
+                    events: list[list[Any]] = []
+
+                    async def collect(event: str, payload: dict[str, Any]) -> None:
+                        events.append([event, payload])
+
+                    result = _run_async(self.service.run(
+                        str(args.get("task_id", "")), str(args.get("content", "")),
+                        trace_id=str(args.get("trace_id", "")), emit=collect,
+                        deadline_ms=args.get("deadline_ms"),
+                        resume=bool(args.get("resume", False)),
+                        checkpoint_id=args.get("checkpoint_id"),
+                    ))
+                    result = {**result, "events": events}
+                elif name == "checkpoint":
+                    ckpt = self.service.checkpoint(str(args.get("task_id", "")), args.get("checkpoint_id"))
+                    result = {"checkpoint": ckpt.to_dict() if ckpt is not None and hasattr(ckpt, "to_dict") else None}
+                else:
+                    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "unknown tool: " + str(name)}}
+                return {"jsonrpc": "2.0", "id": request_id, "result": {
+                    "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+                    "structuredContent": result, "isError": False, **result}}
+            except OrchestrationError as exc:
+                return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": exc.message, "data": exc.to_dict()}}
+            except Exception as exc:
+                return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32603, "message": str(exc)}}
+        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "unknown method: " + str(method)}}
+
+
+def _run_async(coro: Any) -> Any:
+    """在同步 MCP handler 中执行协程（无运行中循环则直接 run）。"""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def create_mcp_app():
+    """把编排 JSON-RPC handler 暴露为私有 HTTP 端点（POST /mcp）。"""
+    from fastapi import FastAPI, Request, Response
+
+    server = OrchestrationMCPServer()
+    app = FastAPI(title="UH! Orchestration MCP")
+
+    @app.post("/mcp")
+    async def mcp_endpoint(request: Request) -> Response:
+        payload = await request.json()
+        response = server.handle(payload)
+        if response is None:
+            return Response(content="", status_code=202)
+        return Response(content=json.dumps(response, ensure_ascii=False),
+                        media_type="application/json")
+
+    @app.get("/health")
+    async def health() -> dict[str, Any]:
+        return {"status": "ok", "role": "orchestration"}
+
+    @app.get("/ready")
+    async def ready() -> dict[str, Any]:
+        return {"status": "ok", "role": "orchestration"}
+
+    return app
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(create_mcp_app(), host="0.0.0.0", port=int(os.environ.get("UH_MCP_PORT", "8080")),
+                access_log=False, log_level="warning")

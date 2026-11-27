@@ -54,6 +54,8 @@ spec:
             - { name: UH_REDIS_URL, value: "redis://redis:6379" }
             - { name: UH_RETRIEVAL_BACKEND, value: chroma }
             - { name: UH_RETRIEVAL_CHROMA, value: "http://chroma:8000" }
+            - { name: UH_RETRIEVAL_MCP_URL, value: "http://uh-llama-index:8080/mcp" }
+            - { name: UH_ORCHESTRATION_MCP_URL, value: "http://uh-langgraph:8080/mcp" }
             - { name: UH_CHECKPOINT_BACKEND, value: postgres }
             - { name: UH_CHECKPOINT_POSTGRES_URL, value: "postgresql://uh@postgres:5432/uh_checkpoints" }
             - name: PGPASSWORD
@@ -121,6 +123,9 @@ spec:
       containers:
         - name: llama-index
           image: ultra-harness/llama-index:0.1.0
+          # M3 独立复审 P1：能力容器须真起 MCP HTTP 服务，否则远程路径无对端、
+          # 副本增减不影响业务路径。内核侧经 UH_RETRIEVAL_MCP_URL 调用。
+          command: ["python", "-m", "kernel.retrieval"]
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -136,6 +141,7 @@ spec:
             requests: { cpu: 200m, memory: 256Mi }
             limits: { cpu: "1", memory: 1Gi }
           env:
+            - { name: UH_MCP_TRANSPORT, value: http }
             - { name: UH_RETRIEVAL_CHROMA, value: "http://chroma:8000" }
 ---
 apiVersion: apps/v1
@@ -162,6 +168,8 @@ spec:
       containers:
         - name: langgraph
           image: ultra-harness/langgraph:0.1.0
+          # M3 独立复审 P1：同上，编排须作为独立服务承接内核 RPC。
+          command: ["python", "-m", "kernel.orchestration"]
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -177,6 +185,7 @@ spec:
             requests: { cpu: 200m, memory: 256Mi }
             limits: { cpu: "1", memory: 1Gi }
           env:
+            - { name: UH_MCP_TRANSPORT, value: http }
             - { name: UH_REDIS_URL, value: "redis://redis:6379" }
             - { name: UH_CHECKPOINT_BACKEND, value: postgres }
             - { name: UH_CHECKPOINT_POSTGRES_URL, value: "postgresql://uh@postgres:5432/uh_checkpoints" }
