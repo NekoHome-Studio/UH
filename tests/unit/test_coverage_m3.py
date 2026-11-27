@@ -163,28 +163,70 @@ def test_gate_stats_shape():
 
 
 # ---------- serve 入口 ----------
-def test_serve_main_invokes_uvicorn(monkeypatch):
+def test_serve_single_worker_runs_server(monkeypatch):
+    """单 worker 走 uvicorn.Server(config).run()。"""
     import kernel.serve as serve
 
     called = {}
 
-    def fake_run(app, **kwargs):
-        called["app"] = app
-        called.update(kwargs)
+    class FakeServer:
+        def __init__(self, config):
+            called["config"] = config
 
-    monkeypatch.setattr(serve.uvicorn, "run", fake_run)
-    monkeypatch.setenv("UH_WORKERS", "3")
+        def run(self, sockets=None):
+            called["sockets"] = sockets
+
+    monkeypatch.setattr(serve.uvicorn, "Server", FakeServer)
+    monkeypatch.setenv("UH_WORKERS", "1")
     monkeypatch.setenv("UH_HOST", "0.0.0.0")
     monkeypatch.setenv("UH_PORT", "9999")
-    serve.main()
-    assert called["app"] == "kernel.main:app"
-    assert called["workers"] == 3
-    assert called["port"] == 9999
-    assert called["access_log"] is False
-    # 单 worker 时 workers=None（uvicorn 语义）
-    monkeypatch.setenv("UH_WORKERS", "1")
-    serve.main()
-    assert called["workers"] is None
+    assert serve.main() == 0
+    assert called["config"].port == 9999
+    assert called["config"].host == "0.0.0.0"
+    assert called["sockets"] is None
+
+
+def test_serve_multi_worker_forks(monkeypatch):
+    """UH_WORKERS>1 且有 fork 时必须真 fork（uvicorn 的 workers 参数实测不生效）。"""
+    import kernel.serve as serve
+
+    calls = {}
+
+    def fake_fork(config, count):
+        calls["count"] = count
+        calls["port"] = config.port
+        return 0
+
+    monkeypatch.setattr(serve, "_fork_workers", fake_fork)
+    monkeypatch.setattr(serve.os, "fork", lambda: 0, raising=False)
+    monkeypatch.setenv("UH_WORKERS", "4")
+    monkeypatch.setenv("UH_PORT", "9999")
+    assert serve.main() == 0
+    assert calls["count"] == 4
+    assert calls["port"] == 9999
+
+
+def test_serve_multi_worker_degrades_without_fork(monkeypatch, capsys):
+    """无 fork（Windows）时退化为单进程并明确提示，不静默按 workers 假装多进程。"""
+    import kernel.serve as serve
+
+    started = {}
+
+    class FakeServer:
+        def __init__(self, config):
+            pass
+
+        def run(self, sockets=None):
+            started["ran"] = True
+
+    monkeypatch.setattr(serve.uvicorn, "Server", FakeServer)
+    monkeypatch.delattr(serve.os, "fork", raising=False)
+    monkeypatch.setattr(serve, "_fork_workers", lambda *a: started.setdefault("forged", True))
+    monkeypatch.setenv("UH_WORKERS", "4")
+    assert serve.main() == 0
+    assert started.get("ran") is True
+    assert "forged" not in started
+    assert "fork" in capsys.readouterr().err
 
 
 # ---------- bench 网络路径（本地 ASGI 直连，无需真服务器） ----------
