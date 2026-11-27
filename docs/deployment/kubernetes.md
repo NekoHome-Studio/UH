@@ -114,3 +114,31 @@ kubectl apply -f deploy/k8s/networkpolicies.yaml
 内核 Pod 挂载 `cgroup: { path: uh-plugins, resources: { limits: { pids: 64 } } }` 到 `/sys/fs/cgroup/uh-plugins`，
 并通过 `UH_SANDBOX_CGROUP_ROOT` 告知 PluginCgroup。**需节点启用 cgroup v2 + 内核 5.10+**；
 未委派时 PluginCgroup 记 `plugin.sandbox.cgroup_unconfigured` 告警并回退 `ulimit -v`（仅内存，无 pids 防护）。
+
+
+## 能力远程调用（M3 复审 P1）
+
+原实现里检索走 `InProcessTransport`、编排直接实例化进程内服务——**uh-llama-index /
+uh-langgraph 的副本数对业务路径毫无意义**，OOM 演练与 HPA 扩缩证明不了隔离。
+
+现已接通远程 MCP：
+
+| 能力 | 内核配置 | 服务端启动 |
+|---|---|---|
+| 检索 | `UH_RETRIEVAL_MCP_URL=http://uh-llama-index:8080/mcp` | `command: ["python","-m","kernel.retrieval"]` + `UH_MCP_TRANSPORT=http` |
+| 编排 | `UH_ORCHESTRATION_MCP_URL=http://uh-langgraph:8080/mcp` | `command: ["python","-m","kernel.orchestration"]` + `UH_MCP_TRANSPORT=http` |
+
+要点：
+- **编排事件回放**：`emit` 回调不可跨进程，远程编排把事件随结果返回（`events` 数组），
+  内核侧逐条回放到任务事件流，外部契约不变。
+- **探针**：两个能力 HTTP app 都提供 `/health` 与 `/ready`（此前检索 app 缺失，
+  K8s 探针会让 Pod 永不就绪）。
+- **本地实例仍保留**：`app.state.orchestration` 供 TaskManager 的 resume/checkpoint 查询；
+  远程模式下 checkpoint 不在本进程，**resume 需 sticky 会话**或后续把 checkpoint 外置。
+
+### 仍未完成（需真集群）
+- HPA 随负载扩缩的实测证据
+- 单能力 Pod OOM/崩溃时业务不中断的演练证据
+- 远程 MCP 连不通时的降级路径实测（代码已返回 degraded，未在集群验证）
+
+> 在此之前，不应把「能力独立扩缩已验证」写进对外声明。
