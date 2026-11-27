@@ -179,3 +179,66 @@ def test_sec01_camelcase_key_normalization():
     from kernel.redaction import redact_value
     for key in ("dbPassword", "authToken", "apiKey", "masterKey", "privateKey"):
         assert redact_value(key, "any-value-here") == REDACTED, key
+
+
+# ---------- 独立审查 R1 P1-1：熵兜底的短/非 ASCII/含空白漏出 ----------
+@pytest.mark.parametrize("secret", [
+    "xQ7pL2mN9vR4tY8wZ1aB",          # 20 位短凭据（原下限 24 漏）
+    "xQ7pL2mN9vR4tY8wZ1aB3c",        # 22 位短凭据
+    "口令xQ7pL2mN9vR4tY8wZ1aB3cD5eF7g",  # 非 ASCII 混入（原 ASCII 正则否决）
+    "xQ7pL2mN9vR4tY8wZ1aB3😀cD5eF7gH9iJ",  # emoji 混入
+])
+def test_sec01_short_and_nonascii_entropy_secrets_are_redacted(secret):
+    out = redact_text(f"the value is {secret} end")
+    assert secret not in out
+    assert REDACTED in out
+
+
+def test_sec01_whitespace_split_high_entropy_secret_is_redacted():
+    """含空白的凭据按 token 切分后每段仍应被判定，不再因过短漏过。"""
+    secret = "xQ7pL2mN9vR4tY8 xQ7pL2mN9vR4tY8"
+    out = redact_text(f"the value is {secret} end")
+    assert secret not in out
+    assert out.count(REDACTED) >= 2
+
+
+@pytest.mark.parametrize("text", [
+    "https://example.com/api/v1/users/12345",
+    "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "550e8400-e29b-41d4-a716-446655440000",
+    "2026-11-27T19:43:17+08:00",
+    "the quick brown fox jumps over the lazy dog",
+    "用户请求已完成处理",
+    "GET /api/v1/sessions/uh_ses_a1b2c3d4e5f6 messages 202 4.2ms",
+    "trace_id=uh_trc_0123456789abcdef0123456789abcdef span_id=sp_a1b2c3d4",
+    "span_id=sp_ce77c64a866ac4e710212179558b3f66",
+    "path /usr/local/lib/python3.14/site-packages/foo/bar.py",
+    "对象 uh_task_deadbeef1234567890 状态 finished",
+    # 自审：中文技术文本天然 CJK+数字+标点三类，不得因「字符类别多」被误判为凭据
+    "使用Python3.14处理数据，版本号v2.0更新完成",
+    "配置文件config.yaml位于etc目录，端口8080已启动",
+    "服务启动耗时2.5s，共处理请求1234次，错误率0.01%",
+    "用户user_12345在2026-11-27T19:43:17登录系统",
+    "模块kernel.plugins加载插件web-search@1.0.0成功",
+])
+def test_sec01_observability_structures_not_overredacted(text):
+    """URL / 哈希 / UUID / 时间戳 / 自然语言 / UH 内部 ID 与文件路径是排查链路，不得误杀。
+
+    trace_id / span_id 契约承诺永不脱敏；降低熵阈值后这些高熵结构曾一度被误杀，
+    本组回归锁死豁免规则。
+    """
+    assert redact_text(text) == text
+
+
+# ---------- 自审修正：伪装成契约 ID 的高熵凭据不得绕过 ----------
+@pytest.mark.parametrize("secret", [
+    "note=trc_4a6f07b1b057501283f515c4237c7ee7",
+    "msg=ses_4e9d1f0ca3a19863de585bb8cedea4d9",
+    "data=task_99f385d406b78c4f5d8dadf510a9ec3c",
+    "x=sp_bb9e0fcbb6142fd64dc96fa5c13965c2",
+])
+def test_sec01_pseudo_contract_id_cannot_bypass_redaction(secret):
+    """ID 豁免必须整 token 全匹配 + 契约 key，note=/msg= 伪装的凭据照常脱敏。"""
+    out = redact_text(secret)
+    assert secret not in out
+    assert REDACTED in out

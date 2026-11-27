@@ -78,16 +78,57 @@ def _is_sequential_run(text: str) -> bool:
     return max(asc, desc) >= len(codes) - 2
 
 
+def _cjk_ratio(value: str) -> float:
+    """CJK（中日韩）字符占比。凭据里 CJK 至多是少量装饰（前缀/标签），
+    自然语言里 CJK 是主体。实测：凭据 ≤0.07，中文技术文本 ≥0.19。"""
+    if not value:
+        return 0.0
+    cjk = sum(
+        1 for ch in value
+        if "\u4e00" <= ch <= "\u9fff"       # CJK 统一汉字
+        or "\u3040" <= ch <= "\u30ff"       # 日文假名
+        or "\uac00" <= ch <= "\ud7af"       # 韩文
+    )
+    return cjk / len(value)
+
+
+# 结构化白名单：契约 ID / URL / 哈希前缀 / 文件路径。必须是**整 token 完整匹配**
+# （或 key=value 中 key 为契约字段的精确形式），不能用松散子串搜索——
+# 自审发现 `note=trc_<32hex>` 这类真凭据会伪装成 ID 绕过，故收紧为全匹配。
+_STRUCTURED_SAFE = re.compile(
+    r"^(?:"
+    # 契约字段=ID：trace_id=uh_trc_、span_id=sp_（span 无 uh_ 前缀）、
+    # session/task/entry 带 uh_ 前缀。key 必须是契约字段，不接受 note=trc_ 伪装。
+    r"(?:trace_id=uh_trc|span_id=sp|session_id=uh_ses|task_id=uh_task|entry_id=uh_mem)_[0-9a-f]{16,}"
+    r"|uh_(?:trc|sp|ses|task|mem)_[0-9a-f]{16,}"   # 裸契约 ID（如 `field: uh_trc_<hex>` 切分后）
+    r"|sp_[0-9a-f]{16,}"                            # 裸 span id
+    r"|(?:sha256|sha1|sha512|md5):[0-9a-f]+"                                                        # 哈希
+    r"|[a-z][a-z0-9+.-]*://\S+"                                                                     # URL
+    r"|[A-Za-z]:[\\/][^\s]+|(?:/[^\s/]+){2,}"                                                      # 绝对路径
+    r")$",
+    re.I,
+)
+
+
 def _looks_like_secret(value: str) -> bool:
-    """高熵且够长 → 视为未知格式凭据（仅供熵兜底，不误杀短词）。"""
-    if len(value) < 24 or len(value) > 512:
+    """高熵 token → 未知格式凭据；自然语言与结构化 ID 零误杀。
+
+    独立审查 P1-1 修复三处漏出：长度下限 24→15（短凭据）、放宽 ASCII 限制
+    （非 ASCII/emoji）、取消 isspace 整串否决（含空白串按 token 切分后判定）。
+
+    自审修正：首版用「字符类别 ≥3」区分，但中文技术文本天然是 CJK+数字+标点
+    三类，导致大面积误杀；改用 **CJK 占比** 判别（凭据 ≤0.07 / 自然语言 ≥0.19），
+    并把 ID 豁免从松散子串搜索收紧为整 token 全匹配，堵住 `note=trc_<hex>` 伪装的
+    新绕过。
+    """
+    if len(value) < 15 or len(value) > 512:
         return False
-    if any(c.isspace() for c in value):
+    if _STRUCTURED_SAFE.fullmatch(value):
         return False
-    # base64/hex/urlsafe 字符集
-    if not re.fullmatch(r"[A-Za-z0-9._~+/=:-]+", value):
+    # 非 ASCII 凭据里 CJK 只是少量装饰；占比高则是自然语言正文，放行。
+    if _cjk_ratio(value) > 0.12:
         return False
-    return _shannon_entropy(value) >= 4.2
+    return _shannon_entropy(value) >= 3.8
 
 
 def redact_text(text: str) -> str:

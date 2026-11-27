@@ -378,14 +378,42 @@ class NoopPluginLoader:
         return None
 
 
-_DANGEROUS_CALLS = {"os.system", "os.popen", "os.execv", "os.execve", "os.spawnl", "subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_output", "subprocess.check_call", "eval", "exec", "ctypes.CDLL", "ctypes.WinDLL", "__import__"}
+# 独立审查 R1 P2-1：原黑名单漏掉 os.exec* 的 v 系列、spawn* 的 v/e 系列、
+# posix_spawn*、subprocess.getoutput/getstatusoutput、pty.spawn 等具名危险调用。
+# 这里按「调用族」补全（不用尾名 alone 猜测），尾名黑名单见下方。
+_DANGEROUS_CALLS = {
+    "os.system", "os.popen",
+    "os.execv", "os.execve", "os.execvp", "os.execvpe", "os.execl", "os.execle", "os.execlp", "os.execlpe",
+    "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
+    "os.posix_spawn", "os.posix_spawnp",
+    "subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_output", "subprocess.check_call",
+    "subprocess.getoutput", "subprocess.getstatusoutput",
+    "pty.spawn",
+    "eval", "exec", "ctypes.CDLL", "ctypes.WinDLL", "__import__",
+}
 _NETWORK_MODULES = {"socket", "http.client", "urllib.request", "requests", "aiohttp", "httpx", "websocket", "websockets"}
 
 
 _JS_DANGER = re.compile(r"child_process|execSync|\bexec\s*\(|\beval\s*\(|new\s+Function|\bspawn\s*\(")
-_DANGEROUS_ATTRS = {"system", "popen", "execv", "execve", "spawnl", "spawnle", "Popen", "run", "call", "check_output", "check_call"}
-# 尾名黑名单：任意命名空间（builtins.eval / b.eval / os.system 等）均命中
-_DANGEROUS_TAILS = {"system", "popen", "execv", "execve", "spawnl", "spawnle", "Popen", "check_output", "check_call", "eval", "exec", "CDLL", "WinDLL", "__import__", "import_module", "getattr"}
+_DANGEROUS_ATTRS = {
+    "system", "popen",
+    "execv", "execve", "execvp", "execvpe", "execl", "execle", "execlp", "execlpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+    "posix_spawn", "posix_spawnp",
+    "Popen", "run", "call", "check_output", "check_call",
+}
+# 尾名黑名单：任意命名空间（builtins.eval / b.eval / os.system 等）均命中。
+# 自审修正：getoutput/getstatusoutput/spawn 不放这里——它们是常见变量名
+# （`getoutput = "result"`），放进来会把 print(getoutput) 误判为危险调用。
+# 这三个只在 _DANGEROUS_CALLS 以全限定名匹配（subprocess.getoutput / pty.spawn），
+# `getattr(x,'getoutput')` 由「危险内建 getattr」+ 字面量规则另行命中。
+_DANGEROUS_TAILS = {
+    "system", "popen",
+    "execv", "execve", "execvp", "execvpe", "execl", "execle", "execlp", "execlpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+    "posix_spawn", "posix_spawnp",
+    "Popen", "check_output", "check_call", "eval", "exec", "CDLL", "WinDLL", "__import__", "import_module", "getattr",
+}
 
 
 def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:

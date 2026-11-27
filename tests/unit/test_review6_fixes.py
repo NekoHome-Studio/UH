@@ -276,3 +276,43 @@ def test_scan_rejects_reflection_paths(tmp_path, tpl, label):
     with pytest.raises(PluginError) as ei:
         _driver(tmp_path, pub).validate(path)
     assert ei.value.detail.get("violation") == "static_scan.exec"
+
+
+# --- 独立审查 R1 P2-1：尾名黑名单漏掉的具名危险调用族 ---
+@pytest.mark.parametrize("src,label", [
+    (b"import os\nos.spawnve(os.P_WAIT, '/bin/sh', ['sh','-c','id'], os.environ)\n", "spawnve"),
+    (b"import os\nos.spawnvp(os.P_WAIT, 'id', ['id'])\n", "spawnvp"),
+    (b"import os\nos.execvp('id', ['id'])\n", "execvp"),
+    (b"import os\nos.execle('/bin/sh','sh','-c','id',{})\n", "execle"),
+    (b"import os\nos.posix_spawn('/bin/id',['id'],os.environ)\n", "posix_spawn"),
+    (b"import subprocess\nsubprocess.getoutput('id')\n", "getoutput"),
+    (b"import subprocess\nsubprocess.getstatusoutput('id')\n", "getstatusoutput"),
+    (b"import pty\npty.spawn(['/bin/id'])\n", "pty_spawn"),
+])
+def test_scan_rejects_r1_exec_family_bypasses(tmp_path, src, label):
+    from kernel.plugins import PluginError
+    path, pub = _pkg(tmp_path, {"main.py": src}, name="r1-" + label.replace("_", "-"))
+    with pytest.raises(PluginError) as ei:
+        _driver(tmp_path, pub).validate(path)
+    assert ei.value.detail.get("violation") == "static_scan.exec"
+
+
+def test_scan_still_allows_benign_after_r1_widening(tmp_path):
+    """扩展黑名单后正常插件不得误伤。"""
+    path, pub = _pkg(tmp_path, {"main.py": b"import json\ndef run(args):\n    return json.dumps({'ok': True})\n"}, name="r1-benign")
+    info = _driver(tmp_path, pub).validate(path)
+    assert info["status"] == "validated"
+    assert not [f for f in info["static_scan"] if f["kind"] == "exec_danger"]
+
+
+# --- 自审修正：常见变量名不得因新尾名而误伤 ---
+@pytest.mark.parametrize("src", [
+    b"getoutput = 'result'\nprint(getoutput)\n",
+    b"getstatusoutput = 'x'\nprint(getstatusoutput)\n",
+])
+def test_scan_allows_common_variable_names_after_r1_widening(tmp_path, src):
+    """getoutput/getstatusoutput 只在全限定调用匹配，普通变量名放行。"""
+    path, pub = _pkg(tmp_path, {"main.py": src}, name="common-var")
+    info = _driver(tmp_path, pub).validate(path)
+    assert info["status"] == "validated"
+    assert not [f for f in info["static_scan"] if f["kind"] == "exec_danger"]

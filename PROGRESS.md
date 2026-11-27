@@ -303,3 +303,10 @@
 **历史下一步（已完成）：**（用户暂缓）：DSH 审 6 任务卡 → GitHub 关闭 #22~#27 + tag m2-v0.1.0 → M3 生产期（#28 Compose 起）。
 M3 含登记项：SBX Linux/macOS 平台矩阵证据（无主机）、R-4~R-8 加固（审计自报覆盖/ProcessPluginLoader 收尾/no_verify 暴露面）、生产化收敛（dev 生产关/TLS+WS 短时票据/per-user principal/delta 合批/主题 REST OpenAPI 登记/web-search 真实代理）。
 交接见 [交接文档](docs/runbooks/交接文档.md) + [环境状态总览](docs/runbooks/环境状态总览.md)。
+
+### 2026-11-27 · v0.1.0 独立第三方审查修复（R2，Unreleased）
+
+- 来源：`docs/reviews/2026-11-25-v0.1.0-独立第三方审查报告-Tencent-Hunyuan-Hy.md`（Hunyuan 独立审查，4×P1 + 5×P2）。
+- DSH 已修 P1-2 性能证据链（服务端硬件基线 `/api/v1/bench/baseline` + Kylin 原始 JSON）、P1-3 密钥扫描（8 变量名 + `${VAR:?}` 默认值）、P1-4 K8s 门禁（otel-collector 加固）、P2-4 契约端点（GET/DELETE `/sessions/{id}` + D2 非自证门禁）。
+- 本轮补修剩余三项：**P1-1** 脱敏熵兜底（长度下限 24→15 + Unicode 字符类别 ≥3 + 熵 3.8 + URL/哈希豁免零误杀）；**P2-1** 静态扫描 exec 族 8 绕过；**P2-3** RELEASE/AGENTS 数字统一。
+- 门禁实测：**527 passed / 16 skipped**（另 1 例 `git http-backend` fixture 本机稳定失败，独立重跑确认，非产品缺陷）· verify-all **16 项 A~O + D2 全绿** · secret **362 文件 0 命中** · doc-links **LINKS_OK** · coverage 见最近一次 `coverage report`。

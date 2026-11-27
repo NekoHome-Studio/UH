@@ -3,6 +3,18 @@
 本文件记录 UH!（Ultra Harness）的所有显著变更。
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased] — v0.1.0 独立第三方审查修复（R2）
+
+> 来源：`docs/reviews/2026-11-25-v0.1.0-独立第三方审查报告-Tencent-Hunyuan-Hy.md`
+
+### 修复
+- **P1-1 日志脱敏熵兜底漏出**：长度下限 24→15、取消纯 ASCII 字符集与 `isspace` 整串否决，改按 Unicode 字符类别（≥3 类）+ 熵 ≥3.8 判定；URL / sha* 哈希前缀显式豁免零误杀。短凭据（16~22 位）、非 ASCII、emoji、含空白串全部脱敏；11 例回归。
+- **P2-1 静态扫描 exec 族绕过**：黑名单补全 `os.exec*`/`os.spawn*`/`os.posix_spawn*`、`subprocess.getoutput`/`getstatusoutput`、`pty.spawn` 共 8+ 种具名危险调用（独立审查前 19 个样本之外的新绕过），9 例回归含正常插件防误杀。
+- **P2-3 交付数字失实**：RELEASE.md / AGENTS.md 的测试数与门禁项数统一为 R2 实测（527 passed / 16 skipped、16 项门禁）。
+
+### 门禁
+- `pytest` 527 passed / 16 skipped（另 2 例环境 fixture 本机失败（git http-backend、插件崩溃计数），均已在基线 HEAD 独立复现，非产品缺陷）· `verify-all --full` 16 项全绿（含 D2 契约端点实现覆盖）· `secret-scan` 362 文件 0 命中 · `doc-links` LINKS_OK。
+
 ## [0.1.0] - 2026-11-25
 
 首个公开版本。微内核 + 能力层 + 记忆层四层架构，本地优先、模块化可插拔、低占用渐进增强、可换肤、可观测。
