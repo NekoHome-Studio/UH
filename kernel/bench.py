@@ -127,8 +127,10 @@ def hardware_baseline() -> dict[str, Any]:
 async def _one_request(client: httpx.AsyncClient, base: str, token: str, scenario: str) -> Sample:
     started = time.perf_counter()
     try:
-        params = {"token": token} if token else {}
-        created = await client.post(f"{base}/api/v1/sessions", params=params)
+        # M3 独立复审 P1：token 不得放查询串——Uvicorn access log 默认记录完整 URL
+        # 含 query，等于把 Bearer 凭据写进访问日志。统一改用 Authorization 头。
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        created = await client.post(f"{base}/api/v1/sessions", headers=headers)
         if created.status_code >= 400:
             return Sample((time.perf_counter() - started) * 1000, False, created.status_code, "session_create")
         data = created.json().get("data") or {}
@@ -139,10 +141,10 @@ async def _one_request(client: httpx.AsyncClient, base: str, token: str, scenari
         # 内核 _request_client_id 优先级：X-UH-Client-ID 头 > cookie > query。
         # 压测复用同一 AsyncClient 会共享 cookie jar，导致后续请求携带上一个会话的
         # uh_client_id cookie 而归属校验失败（403）。显式头覆盖 cookie，且每请求独立。
-        headers = {"X-UH-Client-ID": cid} if cid else {}
+        if cid:
+            headers = {**headers, "X-UH-Client-ID": cid}
         sent = await client.post(
             f"{base}/api/v1/sessions/{sid}/messages",
-            params=params,
             headers=headers,
             json={"content": f"bench {scenario}", "mode": scenario},
         )

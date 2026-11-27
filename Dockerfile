@@ -35,4 +35,6 @@ LABEL org.opencontainers.image.title="UH! Kernel" \
 USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s CMD ["python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/health', timeout=3).close()"]
-CMD ["python", "-m", "uvicorn", "kernel.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# M3 独立复审 P1：--no-access-log 防止查询串（可能是凭据）落入访问日志。
+# 结构化审计由 kernel.logging 输出，无需 Uvicorn 内置 access log。
+CMD ["python", "-m", "uvicorn", "kernel.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]
