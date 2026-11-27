@@ -14,8 +14,8 @@
 - **M3 生产期完成**（#28~#36，9/9）；**MS-5 发布完成**（#37~#39）。
 - 🎉 **v0.1.0 已发布**：tag `v0.1.0` + GitHub Release（8 附件：5 签名 .uhpkg + 公钥 + manifest + SBOM）。**39/39 Issue 关闭，6/6 里程碑结项**。
 - 冻结 tag：contract-v0.1.0 / contract-internal-v1 / contract-events-v1 / m1-v0.1.0 / m1-review-fixed-v0.1.0 / m1-review2-fixed-v0.1.0 / m2-v0.1.0 / **v0.1.0**。
-- M1 一~五审 + M2 独立验收/复检 + v0.1.0 独立第三方审查（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；**527 测试 + verify-all full 16 项**（含 D2 契约端点实现覆盖 + secret 扫描）；详见 docs/reviews/。
-- 当前：**v0.1.0 已交付**（R2 修复后）。质量：527 passed / 16 skipped（另 2 例环境 fixture 本机失败（基线 HEAD 亦复现）），覆盖率 80%（M3 新增 95%），E2E/SBX/SEC 专项通过，SBX-07~09 Kylin Linux 实机取证。
+- M1 一~五审 + M2 独立验收/复检 + v0.1.0 独立第三方审查（Claude/GPT-6/Hunyuan/DeepSeek 多模型交叉）修复闭合；**559 测试 + verify-all full 16 项**（含 D2 契约端点实现覆盖 + secret 扫描）；详见 docs/reviews/。
+- 当前：**v0.1.0 已交付**（R2 修复后）。质量：**559 passed / 16 skipped 全绿**，覆盖率 80%（M3 新增 95%）；原记录的「2 例环境 fixture 失败」经 M3 复审追查实为产品缺陷（git clone 未禁 core.autocrlf 致内容哈希不符），已修复，不再有本机专属失败，E2E/SBX/SEC 专项通过，SBX-07~09 Kylin Linux 实机取证。
 - 下一步（v0.2.0）：**独立执行进程池**冲 P95 SLO（当前 6.7~7.2s vs 目标 2000ms，错误率已达标）、per-user principal、L2 密钥轮换、AST 污点分析、TLS+WS 短时票据、macOS SBX 采证、移除 4 弃用码。
 - 登记项（不阻断）：per-user principal、L2 主密钥轮换、AST 污点分析替代静态黑名单、TLS+WS 短时票据、macOS SBX 矩阵（无主机）、Compose/K8s 真环境实跑。
 - 实时进度以 PROGRESS.md 为准；任务编号映射见 uh-issues/issue-map.csv（#1~#39）。
