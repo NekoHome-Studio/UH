@@ -143,7 +143,9 @@ def validate_external_event(event: Mapping[str, Any], *, previous_event_id: int 
     ``previous_event_id`` 用于流式推送的无空洞约束；schema 本身负责字段、
     枚举和事件载荷判别。任何失败都统一抛出 :class:`EventValidationError`。
     """
-    value = copy.deepcopy(dict(event))
+    # 只做浅拷贝：本函数只读顶层键并原样返回，payload 不被修改。
+    # 原 deepcopy 在 Kylin profiling 中占单任务 CPU 的 29%（每事件一次深拷贝）。
+    value = dict(event)
     if _VALIDATOR is None:
         raise EventValidationError("缺少 jsonschema 依赖，无法校验外部事件")
     shape = _shape_key(value)
