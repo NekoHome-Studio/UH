@@ -29,6 +29,11 @@
     if (next.state === "routing") {
       if (name === "step.finished" && payload.module === "router") next.state = "thinking";
       else if (name === "step.started" && payload.module !== "router") next.state = "thinking";
+      // 2026-11-28 审计：工具任务（tool 模式）不经过 router，从不产生 router 的
+      // step 事件，原逻辑会永远停在 routing。工具调用/结果必须能直接推进状态。
+      else if (name === "tool.call") next.state = "acting";
+      else if (name === "delta") next.state = "streaming";
+      else if (name === "task.confirmation_required") next.state = "awaiting_user";
       return next;
     }
     if ((next.state === "thinking" || next.state === "acting") && name === "safety.check_started") { next.returnState = next.state; next.state = "checking"; return next; }

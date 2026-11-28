@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import time
 import inspect
 import json
 from dataclasses import dataclass, replace
@@ -57,7 +58,7 @@ class HookManager:
         self.queue_size = queue_size
         self._hooks: dict[str, _Hook] = {}
 
-    def register(self, name: str, events: list[str] | tuple[str, ...], handler: HookHandler, *, timeout_ms: int = 5000) -> None:
+    def register(self, name: str, events: list[str] | tuple[str, ...], handler: HookHandler, *, timeout_ms: int = 5000, rate_limit: int | None = None, drop_policy: str = "drop_new") -> None:
         if name in self._hooks:
             raise ValueError(f"hook already registered: {name}")
         if timeout_ms < 1:
@@ -69,6 +70,16 @@ class HookManager:
         for event in events:
             if "*" not in event:
                 validate_event_name(event)
+        # 2026-11-28 审计：契约 manifest/hook.schema.json 声明了 rate_limit，
+        # 但运行时从未使用——配置被静默忽略。这里落实为「每窗口最大投递数」。
+        if rate_limit is not None and (not isinstance(rate_limit, int) or rate_limit < 1):
+            raise ValueError('rate_limit must be a positive integer')
+        if drop_policy not in {'block', 'drop_oldest', 'drop_new'}:
+            raise ValueError('drop_policy must be block/drop_oldest/drop_new')
+        _window_s = 1.0
+        _budget = rate_limit
+        _sent = [0]
+        _window_start = [time.monotonic()]
         patterns = tuple(events)
         queue: asyncio.Queue[Envelope] = asyncio.Queue(maxsize=self.queue_size)
 
@@ -86,10 +97,39 @@ class HookManager:
             error = envelope.payload.get("error")
             if isinstance(error, dict) and isinstance(error.get("code"), str):
                 payload["error_code"] = error["code"]
+            # 速率限制：契约声明的 rate_limit 在此生效（按秒窗口计）。
+            if _budget is not None:
+                now = time.monotonic()
+                if now - _window_start[0] >= _window_s:
+                    _window_start[0] = now
+                    _sent[0] = 0
+                if _sent[0] >= _budget:
+                    log_event(log, 30, "hook.rate_limited", hook=name,
+                              action=envelope.action, rate_limit=_budget)
+                    return
+                _sent[0] += 1
+            item = replace(envelope, payload=payload)
             try:
-                queue.put_nowait(replace(envelope, payload=payload))
+                queue.put_nowait(item)
             except asyncio.QueueFull:
-                log_event(log, 30, "hook.queue.dropped", hook=name, action=envelope.action)
+                # 2026-11-28 审计：原实现队列满时**直接丢弃**且只写一行日志——
+                # 事件静默丢失，订阅方无从感知。按 drop_policy 处理，并计数。
+                if drop_policy == "drop_oldest":
+                    try:
+                        queue.get_nowait()
+                        queue.put_nowait(item)
+                    except (asyncio.QueueEmpty, asyncio.QueueFull):
+                        pass
+                    log_event(log, 30, "hook.queue.dropped_oldest", hook=name,
+                              action=envelope.action)
+                elif drop_policy == "block":
+                    # 仅限显式选择：会阻塞事件总线，需调用方自行承担
+                    await queue.put(item)
+                    log_event(log, 30, "hook.queue.blocked", hook=name,
+                              action=envelope.action)
+                else:
+                    log_event(log, 30, "hook.queue.dropped", hook=name,
+                              action=envelope.action, policy=drop_policy)
 
         task = asyncio.create_task(self._worker(name, queue, handler, timeout_ms))
         self._hooks[name] = _Hook(enqueue, task)

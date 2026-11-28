@@ -66,7 +66,11 @@ class TaskManager:
         self.long_term_memory = long_term_memory
         self.confirmations = confirmations or ConfirmationManager()
         self._confirm_futures: dict[str, asyncio.Future] = {}
+        # 2026-11-28 审计：任务字典此前只增不减——终态任务、事件缓冲、确认令牌
+        # 全部常驻内存，长时间运行持续增长。给终态任务加数量上限，超出淘汰最旧。
         self.tasks: dict[str, dict] = {}
+        self._terminal_order: list[str] = []
+        self.max_terminal_tasks = int(os.environ.get("UH_MAX_TERMINAL_TASKS", "500"))
         self.event_mapper = EventMapper()
         # M3-9：有界执行闸（UH_TASK_CONCURRENCY=0 可关闭，回退原立即执行语义）
         from .execution_gate import ExecutionGate, execution_limit
@@ -100,6 +104,23 @@ class TaskManager:
         except (KeyError, TypeError, ValueError, OSError):
             return recorded_at
         return min(recorded_at, event_time)
+
+    def _reap_terminal_tasks(self) -> None:
+        """淘汰最旧的终态任务，控制内存增长。"""
+        limit = getattr(self, "max_terminal_tasks", 500)
+        order = self._terminal_order
+        while len(order) > limit:
+            task_id = order.pop(0)
+            task = self.tasks.get(task_id)
+            if task is None:
+                continue
+            if task.get("status") not in {"finished", "failed", "cancelled"}:
+                continue
+            self.tasks.pop(task_id, None)
+            self.confirmations.invalidate_task(task_id)
+            forget = getattr(self.event_mapper, "forget_task", None)
+            if callable(forget):
+                forget(task_id)
 
     def create(
         self,
@@ -335,6 +356,11 @@ class TaskManager:
                     slog[sid]["duration_ms"] = int(payload.get("duration_ms") or 0)
         if event in self.TERMINAL_EVENTS:
             task["status"] = event.rsplit(".", 1)[-1]
+            # 2026-11-28 审计：登记终态任务并触发回收（此前 tasks 字典只增不减）
+            tid = task.get("task_id")
+            if tid and tid not in self._terminal_order:
+                self._terminal_order.append(tid)
+                self._reap_terminal_tasks()
         now = time.time()
         task["event_buffer"].append({"event": mapped, "recorded_at": now})
         if task["status"] == "running":

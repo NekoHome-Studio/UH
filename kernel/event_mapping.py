@@ -507,6 +507,18 @@ class EventMapper:
     # Friendly aliases used by bus adapters and tests.
     map_event = map
 
+    def forget_task(self, task_id: str) -> None:
+        """释放某任务的映射状态（2026-11-28 审计：此前四个字典只增不减）。"""
+        self._next_ids.pop(task_id, None)
+        for key in [k for k in self._external if k[0] == task_id]:
+            self._external.pop(key, None)
+        for key in [k for k in self._links if k[0] == task_id]:
+            self._links.pop(key, None)
+        stale = [span for span, items in self._by_span.items()
+                 if all(item.get("task_id") == task_id for item in items)]
+        for span in stale:
+            self._by_span.pop(span, None)
+
     def lookup_by_span(self, span_id: str) -> list[dict[str, Any]]:
         return copy.deepcopy(self._by_span.get(span_id, []))
 

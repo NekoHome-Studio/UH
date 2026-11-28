@@ -30,27 +30,45 @@ def _fork_workers(config: uvicorn.Config, count: int) -> int:
     """fork count 个 worker 共享同一监听 socket。返回退出码。"""
     sock = config.bind_socket()
     children: list[int] = []
-    for _ in range(count):
+    stopping = False
+
+    def spawn() -> int:
         pid = os.fork()
         if pid == 0:
-            # 子进程：继承已绑定的 socket，直接 serve
             try:
                 uvicorn.Server(config).run(sockets=[sock])
             except BaseException:  # noqa: BLE001 - 子进程必须硬退出，不留残骸
                 os._exit(1)
             os._exit(0)
-        children.append(pid)
+        return pid
+
+    for _ in range(count):
+        children.append(spawn())
+
+    # 2026-11-28 审计：原实现 waitpid 一次就返回——任一 worker 异常退出后
+    # 父进程把所有子进程丢下自己走掉（孤儿化），既不替换也不收敛。
+    # 改为监督循环：回收到的子进程若属非正常退出，立刻补一个，保持 count 个。
     try:
-        for pid in children:
-            os.waitpid(pid, 0)
+        while not stopping:
+            try:
+                pid, status = os.wait()
+            except ChildProcessError:
+                break
+            if pid not in children:
+                continue
+            children.remove(pid)
+            exit_code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status
+            print(f"worker pid={pid} exited code={exit_code}，重新拉起", file=sys.stderr)
+            children.append(spawn())
     except KeyboardInterrupt:
-        for pid in children:
+        stopping = True
+        for pid in list(children):
             try:
                 os.kill(pid, 15)
             except ProcessLookupError:
                 pass
     finally:
-        for pid in children:
+        for pid in list(children):
             try:
                 os.waitpid(pid, os.WNOHANG)
             except ChildProcessError:

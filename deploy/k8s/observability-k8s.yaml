@@ -1,12 +1,28 @@
 # M3-3/M3-4 K8s 侧可观测性（二轮复检阻断②）：Prometheus 抓取 + OTel Collector 放行
 apiVersion: v1
 kind: Service
-metadata: { name: uh-kernel-metrics, namespace: uh-prod, labels: { app: uh-kernel } }
+metadata:
+  name: uh-kernel-metrics
+  namespace: uh-prod
+  labels: { app: uh-kernel }
+  annotations:
+    # 2026-11-28 审计：Service 建了但没有任何抓取配置，Prometheus 侧完全
+    # 不知道它存在——「指标可观测」在 K8s 上并未接通。补标准 scrape 注解
+    # （prometheus-operator 与无 operator 两种形态都可用）。
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
 spec:
   selector: { app: uh-kernel }
   ports: [{ name: metrics, port: 9090, targetPort: 8080 }]
 ---
-# Prometheus ServiceMonitor 需 prometheus-operator；无 operator 时用下方 annotations
+# ServiceMonitor 说明：它属于 prometheus-operator 的 CRD，未安装 operator 的集群
+# 直接 apply 会报 no matches for kind。因此本仓库不携带该资源，改用上面 Service 的
+# prometheus.io/* 注解——这是 Prometheus 官方支持的静态发现方式，两种形态都能用。
+# 若集群已装 operator，可自行添加；字段等价于：
+#   spec.selector.matchLabels.app: uh-kernel
+#   spec.endpoints: [{port: metrics, interval: 30s, path: /metrics}]
+
 apiVersion: v1
 kind: Service
 metadata:
