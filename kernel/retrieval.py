@@ -128,6 +128,11 @@ class LocalVectorStore:
         self._index_size = -1
         self._index_dirty = False
         self._load()
+        # 载入后必须立即重建索引：否则首次 add 只把**新文档**写进 _inverted，
+        # 已加载的历史文档永远不在索引里 —— 查询旧内容会漏召回，甚至把候选
+        # 指向错误文档（实测：载入 old1 后 add new1，查 old1 的独有词返回 new1）。
+        if self.documents:
+            self._rebuild_index()
 
     def _guard_access(self) -> None:
         if self._guard is not None:

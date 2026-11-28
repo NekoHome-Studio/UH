@@ -32,6 +32,27 @@ class ResumeConflictError(Exception):
     """任务已终态仍请求 resume（违反终态唯一性，审查 P0-2 修复）。"""
 
 
+def _build_messages(history: list[dict[str, Any]], current: str,
+                    *, max_turns: int = 20) -> list[dict[str, str]]:
+    """把短期记忆历史 + 当前轮拼成 LLM 消息列表。
+
+    短期记忆此前只写入与提供 API 读取，**从未进入 LLM 请求**——模型每轮只看到
+    当前输入，多轮对话事实上不可用（探针证实）。这里按时间顺序还原，
+    仅保留 user/assistant 两类且内容非空的条目，并限制条数防上下文膨胀。
+    """
+    messages: list[dict[str, str]] = []
+    for entry in history[-max_turns * 2:]:
+        if not isinstance(entry, dict):
+            continue
+        role = entry.get("role")
+        text = entry.get("content")
+        if role not in {"user", "assistant"} or not isinstance(text, str) or not text:
+            continue
+        messages.append({"role": role, "content": text})
+    messages.append({"role": "user", "content": current})
+    return messages
+
+
 class TaskManager:
     REPLAY_WINDOW_SECONDS = 5 * 60
     TERMINAL_EVENTS = frozenset({"task.finished", "task.failed", "task.cancelled"})
@@ -245,8 +266,13 @@ class TaskManager:
         await self._emit(task, "task.cancelled", {"reason": reason, "completed_steps": completed})
         return {"task_id": task_id, "reason": reason, "completed_steps": completed}
 
-    async def cancel_session(self, session_id: str, reason: str = "session_closed") -> int:
+    async def cancel_session(self, session_id: str, reason: str = "system") -> int:
         """取消某会话的全部在途任务（M3 复审 P1：关闭会话必须先停写入）。
+
+        注意 reason 必须落在契约 events.schema.json 的 task.cancelled.reason 枚举内
+        （user_request / confirmation_rejected / timeout / system）。早期实现传
+        "session_closed" 不在枚举中，使 task.cancelled 事件校验抛错、任务永久停在
+        cancelling 且无终态事件。会话关闭属系统行为，用 "system" 表达。
 
         复审要求「核验在途任务是否会在关闭后回写 L0」——实测会：关闭时
         memory.clear() 之后，仍在跑的 chat 任务继续追加 L0，造成关闭后仍有
@@ -361,6 +387,10 @@ class TaskManager:
                     "task_type": decision.task_type, "rule": decision.rule,
                     "confidence": decision.confidence, "fallback": decision.fallback,
                 })
+                # 先取**本轮之前**的历史（append 前取，避免把当前轮重复带入）。
+                # 原实现只发单条 user 消息给 LLM，历史对话完全没进上下文——
+                # 探针显示模型收不到此前任何轮次，多轮对话事实上不可用。
+                history = await self.memory.get_context(session_id) if memory_recall else []
                 await self.memory.append(session_id, "user", content)
                 if decision.task_type == "workflow" and self.rpc is not None:
                     await self._run_workflow(t, q, session_id, content, context=context)
@@ -404,7 +434,8 @@ class TaskManager:
                 if long_term_context:
                     prompt += "\n\n长期记忆（仅作参考）：\n" + long_term_context
                 if answer is None:
-                    async for delta in self.llm.stream_chat([{"role": "user", "content": prompt}]):
+                    messages = _build_messages(history, prompt)
+                    async for delta in self.llm.stream_chat(messages):
                         parts.append(delta)
                         await self._emit(t, "delta", {"text": delta, "index": len(parts) - 1})
                     answer = "".join(parts)
@@ -456,7 +487,8 @@ class TaskManager:
                 # 发配对 step 事件、assistant 记忆写回答本身。
                 await self._emit(task, "step.started", {"step_id": "st_degraded", "module": "llm", "name": "generate"})
                 parts: list[str] = []
-                async for delta in self.llm.stream_chat([{"role": "user", "content": content}]):
+                deg_history = await self.memory.get_context(session_id) if memory_recall else []
+                async for delta in self.llm.stream_chat(_build_messages(deg_history, content)):
                     parts.append(delta)
                     await self._emit(task, "delta", {"text": delta, "index": len(parts) - 1})
                 answer = "".join(parts)

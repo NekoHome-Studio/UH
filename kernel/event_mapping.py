@@ -119,11 +119,179 @@ def _schema() -> dict[str, Any]:
 _VALIDATOR = Draft7Validator(_schema()) if Draft7Validator is not None else None
 
 # 形状缓存：(事件名, payload 键, 值类型名元组) → 该形状已通过完整校验。
+#
 # 为什么需要：map() 在 _emit 热路径上被调用，mock 流式回答按字符发 delta 事件，
 # 单个任务会产生数千次全量 JSON Schema 校验（cProfile 实测占单任务 CPU 的 80%）。
-# 同一事件名 + 同一 payload 键集合 + 同一值类型，其 schema 判定结果必然相同，
-# 故首次校验通过后缓存形状即可，语义不变（值仍受类型约束，仅跳过重复遍历）。
+#
+# ⚠ 缓存**只在事件 schema 完全没有值级约束时才启用**：
+# 早期实现只比对「键集合 + 值类型名」，导致同形状但值非法的事件绕过校验——
+# 例如 task.created 的 session_id 有 pattern ^uh_ses_[A-Za-z0-9]+$，
+# 一旦某个合法值建立缓存，后续 'NOT-A-SESSION-ID' 因类型同为 str 被放行；
+# p_delta 的 index 有 minimum: 0 同样漏掉负值。
+# 因此这里在模块加载时静态分析 schema：任何 payload 属性带
+# pattern/enum/min*/max*/format/const/multipleOf 等值约束的事件，一律不做缓存。
 _SHAPE_PASSED: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+# 事件名 → 是否允许形状缓存（payload 无值级约束）
+_CACHE_SAFE: dict[str, bool] = {}
+_VALUE_CONSTRAINT_KEYS = frozenset({
+    "pattern", "enum", "const", "format",
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    "minLength", "maxLength", "minItems", "maxItems", "uniqueItems",
+    "minProperties", "maxProperties",
+    "propertyNames", "contains", "patternProperties", "dependentRequired",
+    "anyOf", "oneOf", "not", "allOf", "if",
+})
+
+
+def _has_value_constraint(node: Any) -> bool:
+    """递归判断 schema 片段是否含值级约束（类型/必填/键集之外的判定）。"""
+    if isinstance(node, bool):
+        return False
+    if not isinstance(node, Mapping):
+        return False
+    for key, value in node.items():
+        if key in _VALUE_CONSTRAINT_KEYS:
+            return True
+        if key in {"properties", "items", "additionalProperties", "$defs", "definitions"}:
+            if _has_value_constraint(value):
+                return True
+        elif isinstance(value, (Mapping, list)) and _has_value_constraint(value):
+            return True
+    return False
+
+
+def _build_cache_safe() -> None:
+    """按 event 名标注「payload 无值约束，可安全按形状缓存」。"""
+    if _VALIDATOR is None:
+        return
+    schema = _schema()
+    by_event = (schema.get("properties") or {}).get("event") or {}
+    # event 通常是 enum；payload 用 allOf/if-then 按事件名判别
+    for name in (by_event.get("enum") or []):
+        try:
+            payload_schema = _payload_schema_for(name, schema)
+        except Exception:  # noqa: BLE001 - 分析失败一律不缓存（保守）
+            _CACHE_SAFE[name] = False
+            continue
+        _CACHE_SAFE[name] = payload_schema is not None and not _has_value_constraint(payload_schema)
+
+
+def _payload_schema_for(name: str, schema: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """从顶层 allOf 的 if/then 分支取出该事件名对应的 payload schema（解引用后）。
+
+    实际结构：allOf[i] = {"if": {"properties": {"event": {"const": name}}},
+                          "then": {"properties": {"payload": {"$ref": "#/$defs/p_xxx"}}}}
+    取不到就返回 None，调用方按「不可缓存」保守处理。
+    """
+    defs = schema.get("$defs") or schema.get("definitions") or {}
+
+    def resolve(node: Any) -> Mapping[str, Any] | None:
+        if not isinstance(node, Mapping):
+            return None
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            target = defs.get(ref.split("/")[-1])
+            return target if isinstance(target, Mapping) else None
+        return node
+
+    branches: list[Any] = []
+    top = schema.get("allOf")
+    if isinstance(top, list):
+        branches.extend(top)
+    payload_direct = (schema.get("properties") or {}).get("payload")
+    if isinstance(payload_direct, list):
+        branches.extend(payload_direct)
+
+    for branch in branches:
+        if not isinstance(branch, Mapping):
+            continue
+        cond = branch.get("if") or {}
+        const = ((cond.get("properties") or {}).get("event") or {}).get("const")
+        if const != name:
+            continue
+        then = branch.get("then") or {}
+        payload = (then.get("properties") or {}).get("payload")
+        return resolve(payload)
+    return None
+
+
+def _compile_constraints(payload_schema: Mapping[str, Any] | None) -> list[tuple[str, Any]]:
+    """把 payload schema 的**值级约束**编译成 (字段, 判定器) 列表。
+
+    为什么要自己编译：jsonschema 全量遍历单次约 0.2ms，而 _emit 在热路径上
+    每任务调用数千次（字符级 delta），是单任务 CPU 的最大头。但缓存「形状」
+    又会让同类型非法值绕过校验（session_id 的 pattern、index 的 minimum）。
+    折中：把约束抽成廉价判定器，每次仍**逐值**检查，只是跳过整套 schema 遍历。
+    这样既保住正确性，又拿到大部分性能收益。
+    """
+    checks: list[tuple[str, Any]] = []
+    props = (payload_schema or {}).get("properties")
+    if not isinstance(props, Mapping):
+        return checks
+    for field, rules in props.items():
+        if not isinstance(rules, Mapping):
+            continue
+        if isinstance(rules.get("enum"), list):
+            allowed = list(rules["enum"])
+            checks.append((field, lambda v, a=allowed: v in a))
+        pattern = rules.get("pattern")
+        if isinstance(pattern, str):
+            compiled = re.compile(pattern)
+            checks.append((field, lambda v, c=compiled: isinstance(v, str) and bool(c.search(v))))
+        lo = rules.get("minimum")
+        if isinstance(lo, (int, float)) and not isinstance(lo, bool):
+            checks.append((field, lambda v, m=lo: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= m))
+        hi = rules.get("maximum")
+        if isinstance(hi, (int, float)) and not isinstance(hi, bool):
+            checks.append((field, lambda v, m=hi: isinstance(v, (int, float)) and not isinstance(v, bool) and v <= m))
+        min_len = rules.get("minLength")
+        if isinstance(min_len, int):
+            checks.append((field, lambda v, m=min_len: isinstance(v, str) and len(v) >= m))
+        max_len = rules.get("maxLength")
+        if isinstance(max_len, int):
+            checks.append((field, lambda v, m=max_len: isinstance(v, str) and len(v) <= m))
+    return checks
+
+
+_CONSTRAINT_CHECKS: dict[str, list[tuple[str, Any]]] = {}
+
+
+def _build_constraint_checks() -> None:
+    """为每个事件编译值级约束判定器（供快速路径使用）。"""
+    if _VALIDATOR is None:
+        return
+    schema = _schema()
+    by_event = (schema.get("properties") or {}).get("event") or {}
+    for name in (by_event.get("enum") or []):
+        try:
+            _CONSTRAINT_CHECKS[name] = _compile_constraints(_payload_schema_for(name, schema))
+        except Exception:  # noqa: BLE001 - 任何分析失败都退回全量校验
+            _CONSTRAINT_CHECKS.pop(name, None)
+
+
+def _fast_check(value: Mapping[str, Any]) -> bool | None:
+    """快速路径：用预编译判定器检查值级约束。
+
+    返回 True 表示「该事件的所有值级约束均通过」，可跳过全量 schema 遍历；
+    返回 None 表示无法快速判定，调用方必须走全量校验。
+    注意：这里只覆盖约束检查，键集合/必填/类型仍由形状缓存与全量校验保证。
+    """
+    event = value.get("event")
+    payload = value.get("payload")
+    if not isinstance(event, str) or not isinstance(payload, Mapping):
+        return None
+    checks = _CONSTRAINT_CHECKS.get(event)
+    if checks is None:
+        return None
+    for field, test in checks:
+        if field not in payload:
+            return None
+        try:
+            if not test(payload[field]):
+                return False
+        except Exception:  # noqa: BLE001
+            return None
+    return True
 
 
 def _shape_key(value: Mapping[str, Any]) -> tuple[str, tuple[tuple[str, str], ...]] | None:
@@ -135,6 +303,10 @@ def _shape_key(value: Mapping[str, Any]) -> tuple[str, tuple[tuple[str, str], ..
         event,
         tuple(sorted((str(k), type(v).__name__) for k, v in payload.items())),
     )
+
+
+_build_cache_safe()
+_build_constraint_checks()
 
 
 def validate_external_event(event: Mapping[str, Any], *, previous_event_id: int | None = None) -> dict[str, Any]:
@@ -149,7 +321,31 @@ def validate_external_event(event: Mapping[str, Any], *, previous_event_id: int 
     if _VALIDATOR is None:
         raise EventValidationError("缺少 jsonschema 依赖，无法校验外部事件")
     shape = _shape_key(value)
-    if shape is None or shape not in _SHAPE_PASSED:
+    # 校验分两级：
+    #   1) 形状（事件名 + payload 键集合 + 值类型）已通过过完整校验 → 只需跑
+    #      值级约束的预编译判定器（pattern/enum/min/max/长度），O(字段数)，
+    #      不触发整套 schema 遍历。
+    #   2) 否则走全量 jsonschema 校验，通过后登记形状。
+    # 关键：值约束**每次都会检查**，不会因为缓存形状而绕过——
+    # 早期实现只比类型名，导致 session_id 的 pattern、index 的 minimum 被跳过。
+    if shape is not None and shape in _SHAPE_PASSED:
+        verdict = _fast_check(value)
+        if verdict is True:
+            pass
+        elif verdict is False:
+            errors = sorted(_VALIDATOR.iter_errors(value), key=lambda error: list(error.path))
+            if errors:
+                first = errors[0]
+                path = ".".join(str(p) for p in first.path) or "<root>"
+                raise EventValidationError(f"非法外部事件 {path}: {first.message}")
+        else:
+            # 无法快速判定（未编译的约束类型）→ 退回全量，保证不漏校验
+            errors = sorted(_VALIDATOR.iter_errors(value), key=lambda error: list(error.path))
+            if errors:
+                first = errors[0]
+                path = ".".join(str(p) for p in first.path) or "<root>"
+                raise EventValidationError(f"非法外部事件 {path}: {first.message}")
+    else:
         errors = sorted(_VALIDATOR.iter_errors(value), key=lambda error: list(error.path))
         if errors:
             first = errors[0]
