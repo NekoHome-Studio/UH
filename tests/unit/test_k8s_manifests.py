@@ -95,7 +95,9 @@ def test_cpu_hpa(manifests, name):
         "type": "Resource",
         "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": 70}},
     }]
-    assert (spec["minReplicas"], spec["maxReplicas"]) == ((1, 1) if name == CREWAI else (2, 5))
+    # 2026-11-28 审计：CrewAI 的缩容器会主动 scale 到 0，HPA 下限必须为 0，
+    # 否则 HPA 立刻拉回 1，两者永久拉锯（原断言固定为 1，等于把冲突当合规）。
+    assert (spec["minReplicas"], spec["maxReplicas"]) == ((0, 1) if name == CREWAI else (2, 5))
     if name != CREWAI:
         assert "replicas" not in manifests["Deployment", name]["spec"]
 

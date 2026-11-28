@@ -29,8 +29,11 @@ kind: HorizontalPodAutoscaler
 metadata: { name: uh-crewai, namespace: uh-prod }
 spec:
   scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: uh-crewai }
-  # A zero target suspends this CPU HPA until the kernel scaler wakes it.
-  minReplicas: 1
+  # 2026-11-28 审计：缩容器会主动 scale 到 0（collaboration.py:230），
+  # 但这里 minReplicas=1 会让 HPA 立刻把副本拉回 1，两者永久拉锯——
+  # 且 Comment 声称「zero target suspends HPA」与 minReplicas: 1 自相矛盾。
+  # 正确做法：HPA 允许缩到 0，实际目标由内核缩容器决定（缩容器负责唤醒）。
+  minReplicas: 0
   maxReplicas: 1
   metrics:
     - type: Resource

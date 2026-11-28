@@ -252,7 +252,10 @@ export function verifyK8sManifests(documents) {
     const spec = get("HorizontalPodAutoscaler", name)?.spec;
     check(equal(spec?.scaleTargetRef, { apiVersion: "apps/v1", kind: "Deployment", name })
       && equal(spec?.metrics, cpu70) && Number.isInteger(spec.minReplicas) && Number.isInteger(spec.maxReplicas)
-      && (name === CREWAI ? spec.minReplicas === 1 && spec.maxReplicas === 1
+      // 2026-11-28 审计：CrewAI 的 HPA 下限必须是 0——内核缩容器会主动
+      // scale 到 0（collaboration.py），若 HPA 下限为 1 两者会永久拉锯。
+      // 原断言硬编码 minReplicas === 1，恰好把冲突固定成了「合规」。
+      && (name === CREWAI ? spec.minReplicas === 0 && spec.maxReplicas >= 1
         : spec.minReplicas >= 2 && spec.maxReplicas > spec.minReplicas
           && get("Deployment", name)?.spec?.replicas === undefined),
     `${name} requires CPU utilization at 70% and bounded replicas`);

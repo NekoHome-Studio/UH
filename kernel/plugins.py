@@ -413,7 +413,36 @@ _DANGEROUS_TAILS = {
     "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
     "posix_spawn", "posix_spawnp",
     "Popen", "check_output", "check_call", "eval", "exec", "CDLL", "WinDLL", "__import__", "import_module", "getattr",
+    # 2026-11-28 审计：文件系统读写此前完全不在扫描范围。但**不能**简单把
+    # read_text/open 全列入危险尾名——插件读取自身包内资源是合法行为，
+    # 全禁会让官方样本全部无法安装（实测 12 例失败）。
+    # 真正的风险是「访问沙箱外的敏感路径」，这可以由字面量路径判定
+    # （见 _SENSITIVE_PATHS / _scan_file_paths），动态路径仍由运行时沙箱兜底。
+    "unlink", "rmdir", "makedirs", "truncate",
 }
+
+
+# 2026-11-28 审计：沙箱外敏感路径字面量。插件读写这些位置应被静态拒绝；
+# 动态拼接的路径静态无法判定，由运行时沙箱（bubblewrap / Job Object）兜底。
+_SENSITIVE_PATH_MARKERS = (
+    '/etc/passwd', '/etc/shadow', '/etc/sudoers', '/etc/hosts',
+    '/root/', '/.ssh/', '/proc/self/environ', '/proc/self/mem',
+    '/sys/kernel/', '/sys/fs/', '/sys/class/',
+    'windows\\system32\\config',
+    'appdata\\roaming\\microsoft\\credentials',
+)
+
+
+def _scan_sensitive_paths(source: str, name: str, findings: list[dict[str, Any]]) -> None:
+    """扫描源码中出现的沙箱外敏感路径字面量（子串匹配，避免正则转义坑）。"""
+    lowered = source.lower()
+    for i, line in enumerate(source.splitlines(), 1):
+        low = line.lower()
+        for marker in _SENSITIVE_PATH_MARKERS:
+            if marker in low:
+                findings.append({"file": name, "line": i, "kind": "exec_danger",
+                                 "detail": "访问沙箱外敏感路径: " + marker})
+                break
 
 
 def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
@@ -452,6 +481,7 @@ def _static_scan(entries: Mapping[str, bytes]) -> list[dict[str, Any]]:
             # 三轮对抗修复：无法解析的源码不得静默放行（null 字节/语法混淆曾绕过扫描）
             findings.append({"file": name, "line": 1, "kind": "exec_danger", "detail": "源码无法解析，拒绝静态放行"})
             continue
+        _scan_sensitive_paths(source, name, findings)
         aliases: dict[str, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
